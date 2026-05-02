@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+blake2b_simd = { version = "1" }
+hex = { version = "0.4" }
+thiserror = { version = "2" }
+
+[dev-dependencies]
+proptest = { version = "1" }
+tokio = { version = "1", features = ["rt", "macros"] }
+wiremock = { version = "0.6" }

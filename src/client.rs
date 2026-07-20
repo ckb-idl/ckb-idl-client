@@ -3,13 +3,13 @@ use crate::{
     types::{DecodedValue, ValidatedField},
 };
 use std::collections::HashMap;
+use sha2::{Sha256, Digest};
 
 /// Compute a 32-byte BLAKE2b-256 digest of the given bytes.
-fn blake2b_256(data: &[u8]) -> [u8; 32] {
-    let hash = blake2b_simd::Params::new().hash_length(32).hash(data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(hash.as_bytes());
-    out
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().into()
 }
 
 /// Returns the expected fixed byte-size for a given IDL type string,
@@ -80,7 +80,7 @@ impl IdlClient {
         }
         let idl_hash = &code_cell_data[code_cell_data.len() - 32..];
 
-        let idl_json_bytes_hash = blake2b_256(idl_json_bytes);
+        let idl_json_bytes_hash = sha256(idl_json_bytes);
 
         if idl_json_bytes_hash.as_slice() != idl_hash {
             return Err(crate::IdlError::HashMismatch {
@@ -414,7 +414,7 @@ mod tests {
     fn test_verify_minimal() {
         let doc_json = r#"{"idl_version":"","name":"","witness":[]}"#;
         let idl_json_bytes = doc_json.as_bytes();
-        let hash = blake2b_256(idl_json_bytes);
+        let hash = sha256(idl_json_bytes);
         let mut code_cell_data: Vec<u8> = vec![];
         code_cell_data.extend_from_slice(&hash);
 

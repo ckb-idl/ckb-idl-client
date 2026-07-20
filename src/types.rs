@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IdlDocument {
+    #[serde(default)]
     pub idl_version: String,
+    #[serde(default)]
     pub name: String,
     pub witness: Vec<WitnessField>,
     #[serde(skip_serializing_if = "Option::is_none")]

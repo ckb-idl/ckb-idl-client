@@ -1,0 +1,21 @@
+{
+  "name": "ckb-idl-registry",
+  "version": "0.1.0",
+  "description": "Off-chain IDL registry for ckb-idl-derive. Stores and serves IdlDocuments keyed by script code_hash.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test src/index.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

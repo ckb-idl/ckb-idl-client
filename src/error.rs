@@ -21,4 +21,37 @@ pub enum IdlError {
     /// The code cell data is too short to contain a 32-byte IDL commitment.
     #[error("insufficient data: code_cell_data has {actual} bytes, need at least 32")]
     InsufficientData { actual: usize },
+
+    // ── Witness validation errors ────────────────────────────────────────────
+
+    /// The witness buffer ran out of bytes while decoding a field.
+    ///
+    /// `field` is the IDL field name. `expected` is how many bytes were needed,
+    /// `got` is how many bytes remained in the buffer.
+    #[error(
+        "witness too short for field `{field}`: need {expected} bytes, have {got}"
+    )]
+    FieldTooShort {
+        field: String,
+        expected: usize,
+        got: usize,
+    },
+
+    /// The IDL contains a type string that this client does not know how to decode.
+    ///
+    /// This means the IDL was produced by a newer version of `ckb-idl-derive` that
+    /// added type support not yet present in this client.
+    #[error("unknown IDL type `{type_}` for field `{field}`")]
+    UnknownType { field: String, type_: String },
+
+    /// All declared fields decoded successfully but bytes remain unconsumed
+    /// in the witness buffer. Indicates the witness has more data than the IDL
+    /// describes — likely a version mismatch or wrong IDL.
+    #[error(
+        "witness has {trailing} trailing bytes after all {field_count} fields were decoded"
+    )]
+    TrailingBytes {
+        trailing: usize,
+        field_count: usize,
+    },
 }

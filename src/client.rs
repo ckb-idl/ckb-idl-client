@@ -422,4 +422,117 @@ mod tests {
         let result = client.verify([0u8; 32], idl_json_bytes, &code_cell_data);
         assert!(result.is_ok(), "verify failed: {:?}", result);
     }
+
+    // ── test vectors ─────────────────────────────────────────────────────────
+
+    /// Runs every case in `test-vectors.json` through `validate_witness_bytes`.
+    ///
+    /// This is the canonical correctness check for the wire format decoder.
+    /// Any reimplementation of the ckb-idl wire format must produce identical
+    /// results for every vector in that file.
+    #[test]
+    fn test_vectors_file() {
+        let vectors_path = concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors.json");
+        let json = std::fs::read_to_string(vectors_path)
+            .expect("test-vectors.json not found at crate root");
+
+        let root: serde_json::Value =
+            serde_json::from_str(&json).expect("test-vectors.json is not valid JSON");
+
+        let vectors = root["vectors"]
+            .as_array()
+            .expect("test-vectors.json must have a 'vectors' array");
+
+        let client = IdlClient::new();
+
+        for vec in vectors {
+            let id = vec["id"].as_str().unwrap_or("<unnamed>");
+            let description = vec["description"].as_str().unwrap_or("");
+            let expect = vec["expect"].as_str().expect("missing 'expect'");
+
+            // Parse field list
+            let fields: Vec<WitnessField> =
+                serde_json::from_value(vec["fields"].clone())
+                    .unwrap_or_else(|e| panic!("[{id}] failed to parse fields: {e}"));
+
+            // Decode wire hex (spaces are allowed as separators)
+            let wire_hex: String = vec["wire_hex"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let wire = hex::decode(&wire_hex)
+                .unwrap_or_else(|e| panic!("[{id}] invalid wire_hex: {e}"));
+
+            match expect {
+                "valid" => {
+                    let result = client.validate_witness_bytes(&fields, &wire);
+                    assert!(
+                        result.is_ok(),
+                        "[{id}] {description}\n  expected valid, got error: {:?}",
+                        result.unwrap_err()
+                    );
+
+                    // If the vector includes decoded expectations, verify them
+                    if let Some(expected_decoded) = vec["decoded"].as_array() {
+                        let got = result.unwrap();
+                        assert_eq!(
+                            got.len(),
+                            expected_decoded.len(),
+                            "[{id}] decoded field count mismatch"
+                        );
+                        for (i, expected_field) in expected_decoded.iter().enumerate() {
+                            let got_field = &got[i];
+                            let exp_name = expected_field["name"].as_str().unwrap();
+                            assert_eq!(
+                                got_field.name, exp_name,
+                                "[{id}] field[{i}] name mismatch"
+                            );
+
+                            // Check value if provided
+                            if let Some(hex_val) = expected_field["value_hex"].as_str() {
+                                let expected_bytes = hex::decode(hex_val)
+                                    .unwrap_or_else(|e| panic!("[{id}] bad value_hex: {e}"));
+                                assert_eq!(
+                                    got_field.value,
+                                    DecodedValue::Bytes(expected_bytes),
+                                    "[{id}] field[{i}] ({exp_name}) value mismatch"
+                                );
+                            } else if let Some(u_val) = expected_field["value_u64"].as_u64() {
+                                let expected_val = match got_field.type_.as_str() {
+                                    "uint8"  => DecodedValue::U8(u_val as u8),
+                                    "uint32" => DecodedValue::U32(u_val as u32),
+                                    "uint64" => DecodedValue::U64(u_val),
+                                    other => panic!("[{id}] unexpected numeric type {other}"),
+                                };
+                                assert_eq!(
+                                    got_field.value, expected_val,
+                                    "[{id}] field[{i}] ({exp_name}) value mismatch"
+                                );
+                            }
+                        }
+                    }
+                }
+                "error" => {
+                    let result = client.validate_witness_bytes(&fields, &wire);
+                    assert!(
+                        result.is_err(),
+                        "[{id}] {description}\n  expected error, but got Ok"
+                    );
+
+                    // Optionally verify the error kind matches
+                    let expected_error = vec["error"].as_str().unwrap_or("");
+                    let err_str = format!("{:?}", result.unwrap_err());
+                    assert!(
+                        err_str.contains(expected_error),
+                        "[{id}] expected error kind '{expected_error}', got: {err_str}"
+                    );
+                }
+                other => panic!("[{id}] unknown 'expect' value: {other}"),
+            }
+        }
+
+        println!("All {} test vectors passed.", vectors.len());
+    }
 }

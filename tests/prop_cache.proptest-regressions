@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cb52265f0ddb2131b09597bd6eb3159c7d022cd566d77d7017f5a4fb87371d7d # shrinks to doc = IdlDocument { idl_version: "", name: "", witness: [], description: None, script_version: None, signing: None }, code_hash = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 128, 157]

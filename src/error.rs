@@ -54,4 +54,26 @@ pub enum IdlError {
         trailing: usize,
         field_count: usize,
     },
+
+    /// Unsupported IDL version
+    #[error("unsupported IDL version `{version}`")]
+    UnsupportedVersion {
+        version: String,
+    },
+
+    #[error("IDL document has no witness_args.lock interface")]
+    MissingLockWitnessInterface,
+
+    #[error("IDL document contains more than one witness_args.lock interface")]
+    DuplicateLockWitnessInterface,
+
+    #[error("unsupported encoding profile `{encoding}`")]
+    UnsupportedEncoding {
+        encoding: String
+    },
+
+    #[error("no verified IDL cached for code hash {code_hash}")]
+    DocumentNotVerified {
+        code_hash: String,
+    },
 }

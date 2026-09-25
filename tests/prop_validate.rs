@@ -75,6 +75,10 @@ proptest! {
                 type_: t.to_string(),
                 required: true,
                 description: None,
+                items: None,
+                fields: None,
+                variants: None,
+                wire_type: None,
             }
         }).collect();
 
@@ -101,6 +105,10 @@ proptest! {
                 type_: t.to_string(),
                 required: true,
                 description: None,
+                items: None,
+                fields: None,
+                variants: None,
+                wire_type: None,
             }
         }).collect();
 
@@ -147,6 +155,10 @@ proptest! {
             type_: "secp256k1_sig".to_string(),
             required: true,
             description: None,
+            items: None,
+                fields: None,
+                variants: None,
+                wire_type: None,
         }];
 
         // Any buffer shorter than 65 bytes must fail for a secp256k1_sig field.
@@ -174,6 +186,10 @@ proptest! {
             type_: "uint8".to_string(),
             required: true,
             description: None,
+            items: None,
+            fields: None,
+            variants: None,
+            wire_type: None,
         }];
 
         let mut buf = vec![val];

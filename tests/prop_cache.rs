@@ -41,11 +41,10 @@ proptest! {
             // witness_requirements should hit the cache — use a dummy URL that
             // would fail if a network request were actually made
             let result = client
-                .witness_requirements("http://127.0.0.1:1", code_hash)
-                .await;
+                .lock_witness_requirements(code_hash);
 
             prop_assert!(result.is_ok(), "witness_requirements failed: {:?}", result);
-            prop_assert_eq!(result.unwrap(), doc.witness);
+            prop_assert_eq!(result.unwrap(), doc.lock_witness()?.fields.clone());
             Ok(()) as Result<(), TestCaseError>
         })?;
     }

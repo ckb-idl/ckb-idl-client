@@ -1,6 +1,7 @@
 mod common;
 
-use ckb_idl_client::{IdlClient, IdlError};
+use ckb_idl_client::types::EncodingProfile;
+use ckb_idl_client::{IdlClient, IdlError, IdlInterface, InterfaceKind, WitnessField};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -11,26 +12,28 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn prop_fetch_returns_served_document() {
     // Use a fixed known-good document
-    let doc = ckb_idl_client::IdlDocument {
-        idl_version: "1".to_string(),
-        name: "test_lock".to_string(),
-        witness: vec![
-            ckb_idl_client::WitnessField {
+
+    let interface = IdlInterface {
+        id: "lock".to_string(),
+        kind: InterfaceKind::WitnessArgsLock,
+        encoding: EncodingProfile { id: "ckb-idl-linear-0.1.0".to_string() },
+        fields: vec![
+            WitnessField {
                 name: "signature".to_string(),
                 type_: "secp256k1_sig".to_string(),
                 required: true,
                 description: Some("65-byte ECDSA signature".to_string()),
-            },
-            ckb_idl_client::WitnessField {
-                name: "pubkey".to_string(),
-                type_: "bytes33".to_string(),
-                required: false,
-                description: None,
-            },
-        ],
-        description: Some("A test lock script".to_string()),
-        script_version: Some("1".to_string()),
-        signing: None,
+                items: None,
+                fields: None,
+                variants: None,
+                wire_type: Some("bytes_65".to_string()),
+            }
+        ]
+    };
+
+    let doc = ckb_idl_client::IdlDocument {
+        idl_version: "0.1.0".to_string(),
+        interfaces: vec![interface]
     };
 
     let code_hash = [0x42u8; 32];
@@ -57,14 +60,10 @@ async fn prop_fetch_returns_served_document() {
 
 // Property 6b: Fetch works for an empty witness array.
 #[tokio::test]
-async fn prop_fetch_returns_document_with_empty_witness() {
+async fn prop_fetch_returns_document_with_empty_interface() {
     let doc = ckb_idl_client::IdlDocument {
-        idl_version: "1".to_string(),
-        name: "minimal_lock".to_string(),
-        witness: vec![],
-        description: None,
-        script_version: None,
-        signing: None,
+        idl_version: "0.1.0".to_string(),
+        interfaces: vec![]
     };
 
     let code_hash = [0x01u8; 32];
@@ -86,7 +85,7 @@ async fn prop_fetch_returns_document_with_empty_witness() {
     let result = client.fetch(&mock_server.uri(), code_hash).await;
 
     assert!(result.is_ok(), "fetch failed: {:?}", result);
-    assert_eq!(result.unwrap().witness, vec![]);
+    assert_eq!(result.unwrap().interfaces, vec![]);
 }
 
 // Property 7: Fetch propagates HTTP error status codes.

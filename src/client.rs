@@ -64,6 +64,7 @@ impl IdlClient {
         }
 
         let doc = res.json::<IdlDocument>().await?;
+        doc.lock_witness()?;
         Ok(doc)
     }
 
@@ -94,17 +95,13 @@ impl IdlClient {
         Ok(())
     }
 
-    pub async fn witness_requirements(
+    pub fn lock_witness_requirements(
         &self,
-        indexer_url: &str,
+        // indexer_url: &str,
         code_hash: [u8; 32],
-    ) -> Result<Vec<WitnessField>> {
-        let doc = if let Some(doc) = self.cache.get(&code_hash) {
-            doc.clone()
-        } else {
-            self.fetch(indexer_url, code_hash).await?
-        };
-        Ok(doc.witness)
+    ) -> Result<&[WitnessField]> {
+        let doc = self.cache.get(&code_hash).ok_or(IdlError::DocumentNotVerified { code_hash: hex::encode(code_hash) })?;
+        Ok(&doc.lock_witness()?.fields)
     }
 
     /// Structurally validate a raw witness buffer against an IDL field list.
@@ -276,6 +273,11 @@ impl IdlClient {
 
         Ok(validated)
     }
+
+    pub fn validate_lock_witness(&self, idl: IdlDocument, raw_witness: &[u8]) -> Result<Vec<ValidatedField>> {
+        let interface = idl.lock_witness()?;
+        self.validate_witness_bytes(&interface.fields, raw_witness)
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +291,10 @@ mod tests {
             type_: type_.to_string(),
             required,
             description: None,
+            fields: None,
+            variants: None,
+            wire_type: None,
+            items: None
         }
     }
 
@@ -412,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_verify_minimal() {
-        let doc_json = r#"{"idl_version":"","name":"","witness":[]}"#;
+        let doc_json = r#"{"idl_version":"", "interfaces": []}"#;
         let idl_json_bytes = doc_json.as_bytes();
         let hash = sha256(idl_json_bytes);
         let mut code_cell_data: Vec<u8> = vec![];

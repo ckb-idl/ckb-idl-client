@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use ckb_idl_client::types::{IdlDocument, SigningInfo, WitnessField};
+use ckb_idl_client::{IdlInterface, InterfaceKind, types::{EncodingProfile, IdlDocument, SigningInfo, WitnessField}};
 use proptest::prelude::*;
 
 // Use printable ASCII strings to avoid JSON serialization edge cases with
@@ -21,6 +21,10 @@ pub fn arb_witness_field() -> impl Strategy<Value = WitnessField> {
             type_,
             required,
             description,
+            items: None,
+            fields: None,
+            variants: None,
+            wire_type: None,
         })
 }
 
@@ -46,11 +50,17 @@ pub fn arb_idl_document() -> impl Strategy<Value = IdlDocument> {
         .prop_map(
             |(idl_version, name, witness, description, script_version, signing)| IdlDocument {
                 idl_version,
-                name,
-                witness,
-                description,
-                script_version,
-                signing,
+                interfaces: vec![IdlInterface {
+                    id: "lock".to_string(),
+                    kind: InterfaceKind::WitnessArgsLock,
+                    encoding: EncodingProfile { id: String::from("ckb-idl-linear-0.1.0") },
+                    fields: witness
+                }]
+                // name,
+                // witness,
+                // description,
+                // script_version,
+                // signing,
             },
         )
 }

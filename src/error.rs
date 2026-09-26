@@ -39,9 +39,9 @@ pub enum IdlError {
     ///
     /// `field` is the IDL field name. `expected` is how many bytes were needed,
     /// `got` is how many bytes remained in the buffer.
-    #[error("witness too short for field `{field}`: need {expected} bytes, have {got}")]
+    #[error("witness too short at `{path}`: need {expected} bytes, have {got}")]
     FieldTooShort {
-        field: String,
+        path: String,
         expected: usize,
         got: usize,
     },
@@ -50,30 +50,37 @@ pub enum IdlError {
     ///
     /// This means the IDL was produced by a newer version of `ckb-idl-derive` that
     /// added type support not yet present in this client.
-    #[error("unknown IDL type `{type_}` for field `{field}`")]
-    UnknownType { field: String, type_: String },
+    #[error("unknown IDL type `{type_}` at `{path}`")]
+    UnknownType { path: String, type_: String },
 
     /// A structural type is missing the metadata needed to decode it.
-    #[error("invalid schema for field `{field}`: {reason}")]
-    InvalidFieldSchema { field: String, reason: &'static str },
+    #[error("invalid schema at `{path}`: {reason}")]
+    InvalidFieldSchema { path: String, reason: &'static str },
 
     /// Encoded vectors must contain at least one element.
-    #[error("vector field `{field}` has an invalid zero element count")]
-    EmptyVector { field: String },
+    #[error("vector at `{path}` has invalid element count {count}")]
+    InvalidVectorCount { path: String, count: usize },
 
     /// A union tag does not identify any declared variant.
-    #[error("unknown union tag {tag} for field `{field}`")]
-    UnknownUnionTag { field: String, tag: u32 },
+    #[error("unknown union tag {tag} at `{path}`")]
+    UnknownUnionTag { path: String, tag: u32 },
+
+    #[error("invalid length at `{path}`")]
+    InvalidLength { path: String },
 
     /// A cursor or encoded-length calculation exceeded the platform size.
-    #[error("length calculation overflow while decoding field `{field}`")]
-    LengthOverflow { field: String },
+    #[error("integer overflow while decoding `{path}`")]
+    IntegerOverflow { path: String },
 
     /// All declared fields decoded successfully but bytes remain unconsumed
     /// in the witness buffer. Indicates the witness has more data than the IDL
     /// describes — likely a version mismatch or wrong IDL.
     #[error("witness has {trailing} trailing bytes after all {field_count} fields were decoded")]
-    TrailingBytes { trailing: usize, field_count: usize },
+    TrailingBytes {
+        path: String,
+        trailing: usize,
+        field_count: usize,
+    },
 
     /// Unsupported IDL version
     #[error("unsupported IDL version `{version}`")]
@@ -86,8 +93,57 @@ pub enum IdlError {
     DuplicateLockWitnessInterface,
 
     #[error("unsupported encoding profile `{encoding}`")]
-    UnsupportedEncoding { encoding: String },
+    UnsupportedEncoding { path: String, encoding: String },
 
     #[error("no verified IDL cached for code hash {code_hash}")]
     DocumentNotVerified { code_hash: String },
+}
+
+impl IdlError {
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::NetworkError(_) => "network_error",
+            Self::HttpError { .. } => "http_error",
+            Self::DeserializationError(_) | Self::InvalidDocument { .. } => "invalid_document",
+            Self::HashMismatch { .. } => "commitment_mismatch",
+            Self::InsufficientData { .. } | Self::InvalidTrailer { .. } => "invalid_trailer",
+            Self::NonCanonicalDocument => "non_canonical_document",
+            Self::InvalidObject { .. } => "invalid_object",
+            Self::FieldTooShort { .. } => "field_too_short",
+            Self::UnknownType { .. } => "unknown_type",
+            Self::InvalidFieldSchema { .. } => "invalid_document",
+            Self::InvalidVectorCount { .. } => "invalid_vector_count",
+            Self::UnknownUnionTag { .. } => "unknown_union_tag",
+            Self::InvalidLength { .. } => "invalid_length",
+            Self::IntegerOverflow { .. } => "integer_overflow",
+            Self::TrailingBytes { .. } => "trailing_bytes",
+            Self::UnsupportedVersion { .. } => "unsupported_version",
+            Self::MissingLockWitnessInterface | Self::DuplicateLockWitnessInterface => {
+                "unsupported_interface"
+            }
+            Self::UnsupportedEncoding { .. } => "unsupported_encoding",
+            Self::DocumentNotVerified { .. } => "document_not_verified",
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        match self {
+            Self::InvalidDocument { path, .. }
+            | Self::InvalidObject { path, .. }
+            | Self::FieldTooShort { path, .. }
+            | Self::UnknownType { path, .. }
+            | Self::InvalidFieldSchema { path, .. }
+            | Self::InvalidVectorCount { path, .. }
+            | Self::UnknownUnionTag { path, .. }
+            | Self::InvalidLength { path }
+            | Self::IntegerOverflow { path }
+            | Self::TrailingBytes { path, .. }
+            | Self::UnsupportedEncoding { path, .. } => path,
+            Self::UnsupportedVersion { .. } => "/idl_version",
+            Self::MissingLockWitnessInterface | Self::DuplicateLockWitnessInterface => {
+                "/interfaces"
+            }
+            _ => "",
+        }
+    }
 }

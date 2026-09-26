@@ -40,7 +40,13 @@ impl IdlDocument {
         }
 
         if interface.encoding.id != "ckb-idl-linear-0.1.0" {
+            let index = self
+                .interfaces
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, interface))
+                .expect("lock_witness selected an interface from this document");
             return Err(IdlError::UnsupportedEncoding {
+                path: format!("/interfaces/{index}/encoding/id"),
                 encoding: interface.encoding.id.clone(),
             });
         }
@@ -223,10 +229,10 @@ fn validate_declared_type(
         return Ok(());
     }
 
-    let wire_type = wire_type.or(semantic).ok_or_else(|| {
+    let wire_type = wire_type.ok_or_else(|| {
         invalid_error(
             format!("{path}/wire_type"),
-            "custom semantic types require a structural wire_type",
+            "semantic types require a structural wire_type",
         )
     })?;
     if !is_structural_type(wire_type) {

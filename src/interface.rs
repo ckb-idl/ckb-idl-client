@@ -44,8 +44,14 @@ impl IdlDocument {
 
     pub fn validate(&self) -> Result<&IdlInterface, IdlError> {
         let interface = self.lock_witness()?;
-        validate_identifier(&interface.id, "/interfaces/0/id")?;
-        validate_fields(&interface.fields, "/interfaces/0/fields")?;
+        let interface_index = self
+            .interfaces
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, interface))
+            .expect("lock_witness returned an interface from this document");
+        let interface_path = format!("/interfaces/{interface_index}");
+        validate_identifier(&interface.id, &format!("{interface_path}/id"))?;
+        validate_fields(&interface.fields, &format!("{interface_path}/fields"))?;
         Ok(interface)
     }
 }

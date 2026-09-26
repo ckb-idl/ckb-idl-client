@@ -1,3 +1,5 @@
+//! IDL registry access, commitment verification, and witness codecs.
+
 use crate::{
     IdlDocument, IdlError, Result, WitnessField,
     types::{DecodedField, DecodedValue, VectorItem, WitnessObject},
@@ -11,7 +13,7 @@ const IDL_TRAILER_FLAGS: u8 = 0;
 const IDL_TRAILER_PAYLOAD_LEN: usize = 34;
 const IDL_TRAILER_LEN: usize = IDL_TRAILER_PAYLOAD_LEN + 4 + IDL_TRAILER_MAGIC.len();
 
-/// Compute a 32-byte BLAKE2b-256 digest of the given bytes.
+/// Computes the raw SHA-256 digest used by the IDL binding trailer.
 fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -39,12 +41,18 @@ fn fixed_size_for_type(type_: &str) -> Option<usize> {
     }
 }
 
+/// Stateful client for registry retrieval and commitment-verified IDL caching.
+///
+/// Cache entries are inserted only after exact-byte commitment verification,
+/// parsing, and document validation.
 pub struct IdlClient {
+    /// HTTP transport used for registry requests.
     pub http: reqwest::Client,
     cache: HashMap<[u8; 32], IdlDocument>,
 }
 
 impl IdlClient {
+    /// Constructs a client with a default Reqwest transport and an empty cache.
     pub fn new() -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -52,6 +60,10 @@ impl IdlClient {
         }
     }
 
+    /// Fetches the exact IDL response bytes for `code_hash` from a registry.
+    ///
+    /// The returned bytes are untrusted until passed to
+    /// [`IdlClient::verify_and_cache`] or [`IdlClient::verify_commitment`].
     pub async fn fetch_bytes(&self, registry_url: &str, code_hash: [u8; 32]) -> Result<Vec<u8>> {
         let url = format!("{registry_url}/idl/{}", hex::encode(code_hash));
         let response = self.http.get(url).send().await?;
@@ -65,6 +77,10 @@ impl IdlClient {
         Ok(response.bytes().await?.to_vec())
     }
 
+    /// Fetches an IDL, verifies it against code-cell data, validates it, and caches it.
+    ///
+    /// The caller must supply the code-cell data resolved for `code_hash`. This
+    /// release does not independently verify the CKB code-hash lookup relation.
     pub async fn fetch_verify_and_cache(
         &mut self,
         registry_url: &str,
@@ -75,6 +91,7 @@ impl IdlClient {
         self.verify_and_cache(code_hash, &idl_bytes, code_cell_data)
     }
 
+    /// Verifies exact IDL bytes, parses and validates the document, then caches it.
     pub fn verify_and_cache(
         &mut self,
         code_hash: [u8; 32],
@@ -90,6 +107,10 @@ impl IdlClient {
         Ok(self.cache.get(&code_hash).expect("just inserted"))
     }
 
+    /// Parses one complete IDL JSON document without verifying a commitment.
+    ///
+    /// Trailing non-whitespace input is rejected. A successfully parsed document
+    /// is still untrusted and should be validated or commitment-verified before use.
     pub fn parse_document(idl_bytes: &[u8]) -> Result<IdlDocument> {
         let mut deserializer = serde_json::Deserializer::from_slice(idl_bytes);
         let document = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
@@ -115,6 +136,11 @@ impl IdlClient {
         Ok(document)
     }
 
+    /// Verifies RFC 8785 canonical IDL bytes against Binding Trailer 1.
+    ///
+    /// This verifies the IDL digest carried by `code_cell_data`; it does not
+    /// establish that the supplied code-cell data corresponds to a CKB script's
+    /// `code_hash`.
     pub fn verify_commitment(idl_bytes: &[u8], code_cell_data: &[u8]) -> Result<()> {
         if code_cell_data.len() < IDL_TRAILER_LEN {
             return Err(IdlError::InsufficientData {
@@ -183,6 +209,7 @@ impl IdlClient {
         Ok(())
     }
 
+    /// Compatibility wrapper around [`IdlClient::verify_and_cache`].
     pub fn verify(
         &mut self,
         code_hash: [u8; 32],
@@ -193,6 +220,7 @@ impl IdlClient {
         Ok(())
     }
 
+    /// Returns the lock-witness fields from a commitment-verified cached document.
     pub fn lock_witness_requirements(
         &self,
         // indexer_url: &str,
@@ -516,6 +544,9 @@ impl IdlClient {
         Ok(bytes)
     }
 
+    /// Validates and decodes `WitnessArgs.lock` using an owned IDL document.
+    ///
+    /// Prefer [`IdlClient::decode_lock_witness`] when the document is borrowed.
     pub fn validate_lock_witness(
         &self,
         idl: IdlDocument,
@@ -524,6 +555,7 @@ impl IdlClient {
         self.decode_lock_witness(&idl, raw_witness)
     }
 
+    /// Validates an IDL document and decodes `WitnessArgs.lock` into an ordered object.
     pub fn decode_lock_witness(
         &self,
         idl: &IdlDocument,
@@ -533,6 +565,9 @@ impl IdlClient {
         self.validate_witness_bytes(&interface.fields, raw_witness)
     }
 
+    /// Encodes an ordered witness object according to the document's lock interface.
+    ///
+    /// Missing, unknown, out-of-order, and incorrectly typed values are rejected.
     pub fn encode_lock_witness(
         &self,
         idl: &IdlDocument,
@@ -815,6 +850,12 @@ impl IdlClient {
             DecodedValue::Union { .. } => "union",
             DecodedValue::Optional(_) => "optional",
         }
+    }
+}
+
+impl Default for IdlClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

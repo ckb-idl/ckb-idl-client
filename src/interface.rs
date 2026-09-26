@@ -183,34 +183,41 @@ fn validate_declared_type(
     path: &str,
 ) -> Result<(), IdlError> {
     let semantic = semantic_wire_type(type_);
-    if !is_structural_type(type_) && semantic.is_none() && !is_custom_semantic_type(type_) {
+    let structural = is_structural_type(type_);
+    let custom_semantic = is_custom_semantic_type(type_);
+    if !structural && semantic.is_none() && !custom_semantic {
         return invalid(format!("{path}/type"), "unsupported IDL type");
     }
 
-    if let Some(wire_type) = wire_type
-        && !is_structural_type(wire_type)
-    {
+    if structural {
+        if wire_type.is_some() {
+            return invalid(
+                format!("{path}/wire_type"),
+                "wire_type is only valid when type is semantic",
+            );
+        }
+        return Ok(());
+    }
+
+    let wire_type = wire_type.ok_or_else(|| {
+        invalid_error(
+            format!("{path}/wire_type"),
+            "semantic types require a structural wire_type",
+        )
+    })?;
+    if !is_structural_type(wire_type) {
         return invalid(
             format!("{path}/wire_type"),
             "unsupported structural wire type",
         );
     }
-
-    if semantic.is_some() || is_custom_semantic_type(type_) {
-        let wire_type = wire_type.ok_or_else(|| {
-            invalid_error(
-                format!("{path}/wire_type"),
-                "semantic types require a structural wire_type",
-            )
-        })?;
-        if let Some(expected) = semantic
-            && wire_type != expected
-        {
-            return invalid(
-                format!("{path}/wire_type"),
-                format!("semantic type `{type_}` requires `{expected}`"),
-            );
-        }
+    if let Some(expected) = semantic
+        && wire_type != expected
+    {
+        return invalid(
+            format!("{path}/wire_type"),
+            format!("semantic type `{type_}` requires `{expected}`"),
+        );
     }
 
     Ok(())
@@ -392,6 +399,14 @@ mod tests {
                     let mut semantic = field("signature", "secp256k1_sig", true);
                     semantic.wire_type = Some("bytes_fixed_64".to_string());
                     document(vec![semantic])
+                },
+                "/interfaces/0/fields/0/wire_type",
+            ),
+            (
+                {
+                    let mut structural = field("nonce", "uint8", true);
+                    structural.wire_type = Some("uint64".to_string());
+                    document(vec![structural])
                 },
                 "/interfaces/0/fields/0/wire_type",
             ),

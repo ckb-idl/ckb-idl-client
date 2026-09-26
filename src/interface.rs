@@ -199,10 +199,10 @@ fn validate_declared_type(
         return Ok(());
     }
 
-    let wire_type = wire_type.ok_or_else(|| {
+    let wire_type = wire_type.or(semantic).ok_or_else(|| {
         invalid_error(
             format!("{path}/wire_type"),
-            "semantic types require a structural wire_type",
+            "custom semantic types require a structural wire_type",
         )
     })?;
     if !is_structural_type(wire_type) {

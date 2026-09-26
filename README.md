@@ -66,7 +66,7 @@ let idl_doc: IdlDocument = serde_json::from_slice(&idl_json_bytes)?;
 let client = IdlClient::new();
 
 // wire: the raw bytes you intend to put in WitnessArgs.lock
-let validated = client.validate_witness_bytes(&idl_doc.witness, &wire)?;
+let validated = client.validate_lock_witness(idl_doc, &wire)?;
 
 for field in &validated {
     println!("{} ({}): {:?}", field.name, field.type_, field.value);
@@ -86,7 +86,7 @@ wire.extend_from_slice(&(preimage.len() as u32).to_le_bytes());
 wire.extend_from_slice(preimage);
 
 // Validate against the IDL before building the transaction
-let validated = client.validate_witness_bytes(&idl_doc.witness, &wire)?;
+let validated = client.validate_lock_witness(idl_doc, &wire)?;
 // => Ok([ValidatedField { name: "preimage", type_: "bytes", value: Bytes([104,101,108,108,111]) }])
 ```
 

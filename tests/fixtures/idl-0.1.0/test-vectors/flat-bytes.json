@@ -1,0 +1,1 @@
+{"idl_file":"../examples/flat-witness.json","name":"flat_bytes_hello","expected_object":{"preimage":"0x68656c6c6f"},"wire_hex":"0500000068656c6c6f"}

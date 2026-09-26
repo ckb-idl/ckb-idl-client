@@ -82,12 +82,37 @@ impl IdlClient {
         code_cell_data: &[u8],
     ) -> Result<&IdlDocument> {
         Self::verify_commitment(idl_bytes, code_cell_data)?;
-        let document: IdlDocument = serde_json::from_slice(idl_bytes)?;
+        let document = Self::parse_document(idl_bytes)?;
         document.validate()?;
 
         self.cache.insert(code_hash, document);
 
         Ok(self.cache.get(&code_hash).expect("just inserted"))
+    }
+
+    pub fn parse_document(idl_bytes: &[u8]) -> Result<IdlDocument> {
+        let mut deserializer = serde_json::Deserializer::from_slice(idl_bytes);
+        let document = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+            let mut path = Self::serde_path_to_pointer(error.path());
+            let message = error.inner().to_string();
+            if let Some(unknown) = Self::unknown_field_name(&message) {
+                let suffix = format!("/{}", Self::escape_pointer_segment(unknown));
+                if !path.ends_with(&suffix) {
+                    path.push_str(&suffix);
+                }
+            }
+            IdlError::InvalidDocument {
+                path,
+                reason: message,
+            }
+        })?;
+        deserializer
+            .end()
+            .map_err(|error| IdlError::InvalidDocument {
+                path: String::new(),
+                reason: error.to_string(),
+            })?;
+        Ok(document)
     }
 
     pub fn verify_commitment(idl_bytes: &[u8], code_cell_data: &[u8]) -> Result<()> {
@@ -136,6 +161,9 @@ impl IdlClient {
             });
         }
 
+        if idl_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            return Err(IdlError::NonCanonicalDocument);
+        }
         let parsed: serde_json::Value = serde_json::from_slice(idl_bytes)?;
         let canonical = serde_json_canonicalizer::to_vec(&parsed)
             .expect("serde_json::Value is canonicalisable");
@@ -215,12 +243,13 @@ impl IdlClient {
         raw_witness: &[u8],
     ) -> Result<WitnessObject> {
         let mut cursor = 0usize;
-        let validated = Self::decode_fields_at(fields, raw_witness, &mut cursor)?;
+        let validated = Self::decode_fields_at(fields, raw_witness, &mut cursor, "")?;
 
         // Any remaining bytes mean the witness is larger than the IDL describes.
         let trailing = raw_witness.len().saturating_sub(cursor);
         if trailing > 0 {
             return Err(IdlError::TrailingBytes {
+                path: String::new(),
                 trailing,
                 field_count: fields.len(),
             });
@@ -233,13 +262,15 @@ impl IdlClient {
         fields: &[WitnessField],
         raw: &[u8],
         cursor: &mut usize,
+        parent_path: &str,
     ) -> Result<WitnessObject> {
         let mut validated = Vec::with_capacity(fields.len());
         for field in fields {
+            let path = Self::child_path(parent_path, &field.name);
             let value = if !field.required && *cursor == raw.len() {
                 DecodedValue::Optional(None)
             } else {
-                let value = Self::decode_value(field, raw, cursor)?;
+                let value = Self::decode_value(field, raw, cursor, &path)?;
                 if field.required {
                     value
                 } else {
@@ -254,94 +285,113 @@ impl IdlClient {
         Ok(WitnessObject::new(validated))
     }
 
-    fn decode_value(field: &WitnessField, raw: &[u8], cursor: &mut usize) -> Result<DecodedValue> {
+    fn decode_value(
+        field: &WitnessField,
+        raw: &[u8],
+        cursor: &mut usize,
+        path: &str,
+    ) -> Result<DecodedValue> {
         match field.structural_type() {
-            "uint8" => Ok(DecodedValue::U8(
-                Self::take(raw, cursor, 1, &field.name)?[0],
-            )),
+            "uint8" => Ok(DecodedValue::U8(Self::take(raw, cursor, 1, path)?[0])),
             "uint16" => Ok(DecodedValue::U16(u16::from_le_bytes(
-                Self::take(raw, cursor, 2, &field.name)?.try_into().unwrap(),
+                Self::take(raw, cursor, 2, path)?.try_into().unwrap(),
             ))),
-            "uint32" => Ok(DecodedValue::U32(Self::read_u32(raw, cursor, &field.name)?)),
+            "uint32" => Ok(DecodedValue::U32(Self::read_u32(raw, cursor, path)?)),
             "uint64" => Ok(DecodedValue::U64(u64::from_le_bytes(
-                Self::take(raw, cursor, 8, &field.name)?.try_into().unwrap(),
+                Self::take(raw, cursor, 8, path)?.try_into().unwrap(),
             ))),
             "uint128" => Ok(DecodedValue::U128(u128::from_le_bytes(
-                Self::take(raw, cursor, 16, &field.name)?
-                    .try_into()
-                    .unwrap(),
+                Self::take(raw, cursor, 16, path)?.try_into().unwrap(),
             ))),
             "bytes" => {
-                let len = Self::read_u32(raw, cursor, &field.name)? as usize;
+                let len = Self::read_u32(raw, cursor, path)?;
+                if len.checked_add(4).is_none() {
+                    return Err(IdlError::InvalidLength {
+                        path: path.to_string(),
+                    });
+                }
                 Ok(DecodedValue::Bytes(
-                    Self::take(raw, cursor, len, &field.name)?.to_vec(),
+                    Self::take(raw, cursor, len as usize, path)?.to_vec(),
                 ))
             }
-            "vector" => Self::decode_vector(field, raw, cursor),
+            "vector" => Self::decode_vector(field, raw, cursor, path),
             "struct" => Ok(DecodedValue::Struct(Self::decode_fields_at(
-                Self::nonempty_struct_fields(field)?,
+                Self::nonempty_struct_fields(field, path)?,
                 raw,
                 cursor,
+                path,
             )?)),
-            "union" => Self::decode_union(field, raw, cursor),
+            "union" => Self::decode_union(field, raw, cursor, path),
             type_ => {
                 if let Some(size) = fixed_size_for_type(type_) {
                     return Ok(DecodedValue::Bytes(
-                        Self::take(raw, cursor, size, &field.name)?.to_vec(),
+                        Self::take(raw, cursor, size, path)?.to_vec(),
                     ));
                 }
                 Err(IdlError::UnknownType {
-                    field: field.name.clone(),
+                    path: path.to_string(),
                     type_: type_.to_string(),
                 })
             }
         }
     }
 
-    fn decode_vector(field: &WitnessField, raw: &[u8], cursor: &mut usize) -> Result<DecodedValue> {
+    fn decode_vector(
+        field: &WitnessField,
+        raw: &[u8],
+        cursor: &mut usize,
+        path: &str,
+    ) -> Result<DecodedValue> {
         let item = field
             .items
             .as_deref()
             .ok_or_else(|| IdlError::InvalidFieldSchema {
-                field: field.name.clone(),
+                path: path.to_string(),
                 reason: "vector is missing items",
             })?;
-        let count = Self::read_u32(raw, cursor, &field.name)? as usize;
+        let count = Self::read_u32(raw, cursor, path)? as usize;
         if count == 0 {
-            return Err(IdlError::EmptyVector {
-                field: field.name.clone(),
+            return Err(IdlError::InvalidVectorCount {
+                path: path.to_string(),
+                count,
             });
         }
 
-        let item_size = Self::vector_item_size(item, &field.name)?;
+        let item_size = Self::vector_item_size(item, path)?;
         let encoded_size =
             count
                 .checked_mul(item_size)
-                .ok_or_else(|| IdlError::LengthOverflow {
-                    field: field.name.clone(),
+                .ok_or_else(|| IdlError::IntegerOverflow {
+                    path: path.to_string(),
                 })?;
         let remaining = raw.len().saturating_sub(*cursor);
         if remaining < encoded_size {
+            let index = remaining / item_size;
             return Err(IdlError::FieldTooShort {
-                field: field.name.clone(),
-                expected: encoded_size,
-                got: remaining,
+                path: format!("{path}/{index}"),
+                expected: item_size,
+                got: remaining % item_size,
             });
         }
 
         let mut values = Vec::new();
         values
             .try_reserve_exact(count)
-            .map_err(|_| IdlError::LengthOverflow {
-                field: field.name.clone(),
+            .map_err(|_| IdlError::IntegerOverflow {
+                path: path.to_string(),
             })?;
-        for _ in 0..count {
-            values.push(Self::decode_vector_item(item, &field.name, raw, cursor)?);
+        for index in 0..count {
+            values.push(Self::decode_vector_item(
+                item,
+                &format!("{path}/{index}"),
+                raw,
+                cursor,
+            )?);
         }
         Ok(DecodedValue::Vector(values))
     }
 
-    fn vector_item_size(item: &VectorItem, field_name: &str) -> Result<usize> {
+    fn vector_item_size(item: &VectorItem, path: &str) -> Result<usize> {
         match item.structural_type() {
             "uint16" => Ok(2),
             "uint32" => Ok(4),
@@ -349,12 +399,12 @@ impl IdlClient {
             "uint128" => Ok(16),
             type_ if type_.starts_with("bytes_fixed_") => {
                 fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
-                    field: field_name.to_string(),
+                    path: path.to_string(),
                     type_: type_.to_string(),
                 })
             }
             type_ => Err(IdlError::UnknownType {
-                field: field_name.to_string(),
+                path: path.to_string(),
                 type_: type_.to_string(),
             }),
         }
@@ -362,93 +412,101 @@ impl IdlClient {
 
     fn decode_vector_item(
         item: &VectorItem,
-        field_name: &str,
+        path: &str,
         raw: &[u8],
         cursor: &mut usize,
     ) -> Result<DecodedValue> {
         match item.structural_type() {
             "uint16" => Ok(DecodedValue::U16(u16::from_le_bytes(
-                Self::take(raw, cursor, 2, field_name)?.try_into().unwrap(),
+                Self::take(raw, cursor, 2, path)?.try_into().unwrap(),
             ))),
-            "uint32" => Ok(DecodedValue::U32(Self::read_u32(raw, cursor, field_name)?)),
+            "uint32" => Ok(DecodedValue::U32(Self::read_u32(raw, cursor, path)?)),
             "uint64" => Ok(DecodedValue::U64(u64::from_le_bytes(
-                Self::take(raw, cursor, 8, field_name)?.try_into().unwrap(),
+                Self::take(raw, cursor, 8, path)?.try_into().unwrap(),
             ))),
             "uint128" => Ok(DecodedValue::U128(u128::from_le_bytes(
-                Self::take(raw, cursor, 16, field_name)?.try_into().unwrap(),
+                Self::take(raw, cursor, 16, path)?.try_into().unwrap(),
             ))),
             type_ if type_.starts_with("bytes_fixed_") => {
                 let size = fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
-                    field: field_name.to_string(),
+                    path: path.to_string(),
                     type_: type_.to_string(),
                 })?;
                 Ok(DecodedValue::Bytes(
-                    Self::take(raw, cursor, size, field_name)?.to_vec(),
+                    Self::take(raw, cursor, size, path)?.to_vec(),
                 ))
             }
             type_ => Err(IdlError::UnknownType {
-                field: field_name.to_string(),
+                path: path.to_string(),
                 type_: type_.to_string(),
             }),
         }
     }
 
-    fn decode_union(field: &WitnessField, raw: &[u8], cursor: &mut usize) -> Result<DecodedValue> {
+    fn decode_union(
+        field: &WitnessField,
+        raw: &[u8],
+        cursor: &mut usize,
+        path: &str,
+    ) -> Result<DecodedValue> {
         let variants = field
             .variants
             .as_deref()
             .filter(|variants| !variants.is_empty())
             .ok_or_else(|| IdlError::InvalidFieldSchema {
-                field: field.name.clone(),
+                path: path.to_string(),
                 reason: "union variants must not be empty",
             })?;
-        let tag = Self::read_u32(raw, cursor, &field.name)?;
+        let tag = Self::read_u32(raw, cursor, path)?;
         let variant = variants
             .iter()
             .find(|variant| variant.tag == tag)
             .ok_or_else(|| IdlError::UnknownUnionTag {
-                field: field.name.clone(),
+                path: path.to_string(),
                 tag,
             })?;
         if variant.fields.is_empty() {
             return Err(IdlError::InvalidFieldSchema {
-                field: field.name.clone(),
+                path: path.to_string(),
                 reason: "union variant fields must not be empty",
             });
         }
         Ok(DecodedValue::Union {
             tag,
             variant: variant.name.clone(),
-            value: Self::decode_fields_at(&variant.fields, raw, cursor)?,
+            value: Self::decode_fields_at(&variant.fields, raw, cursor, &format!("{path}/value"))?,
         })
     }
 
-    fn nonempty_struct_fields(field: &WitnessField) -> Result<&[WitnessField]> {
+    fn nonempty_struct_fields<'a>(
+        field: &'a WitnessField,
+        path: &str,
+    ) -> Result<&'a [WitnessField]> {
         field
             .fields
             .as_deref()
             .filter(|fields| !fields.is_empty())
             .ok_or_else(|| IdlError::InvalidFieldSchema {
-                field: field.name.clone(),
+                path: path.to_string(),
                 reason: "struct fields must not be empty",
             })
     }
 
-    fn read_u32(raw: &[u8], cursor: &mut usize, field: &str) -> Result<u32> {
+    fn read_u32(raw: &[u8], cursor: &mut usize, path: &str) -> Result<u32> {
         Ok(u32::from_le_bytes(
-            Self::take(raw, cursor, 4, field)?.try_into().unwrap(),
+            Self::take(raw, cursor, 4, path)?.try_into().unwrap(),
         ))
     }
 
-    fn take<'a>(raw: &'a [u8], cursor: &mut usize, count: usize, field: &str) -> Result<&'a [u8]> {
+    fn take<'a>(raw: &'a [u8], cursor: &mut usize, count: usize, path: &str) -> Result<&'a [u8]> {
         let end = cursor
             .checked_add(count)
-            .ok_or_else(|| IdlError::LengthOverflow {
-                field: field.to_string(),
+            .ok_or_else(|| IdlError::IntegerOverflow {
+                path: path.to_string(),
             })?;
         if end > raw.len() {
             return Err(IdlError::FieldTooShort {
-                field: field.to_string(),
+                path: path.to_string(),
                 expected: count,
                 got: raw.len().saturating_sub(*cursor),
             });
@@ -573,7 +631,7 @@ impl IdlClient {
                 Self::encode_vector(field, values, path, encoded)?;
             }
             ("struct", DecodedValue::Struct(object)) => {
-                let fields = Self::nonempty_struct_fields(field)?;
+                let fields = Self::nonempty_struct_fields(field, path)?;
                 Self::encode_fields(fields, object, path, encoded)?;
             }
             (
@@ -696,7 +754,7 @@ impl IdlClient {
             );
         }
         encoded.extend_from_slice(&tag.to_le_bytes());
-        Self::encode_fields(&variant.fields, value, path, encoded)
+        Self::encode_fields(&variant.fields, value, &format!("{path}/value"), encoded)
     }
 
     fn child_path(parent: &str, field: &str) -> String {
@@ -705,6 +763,36 @@ impl IdlClient {
         } else {
             format!("{parent}/{field}")
         }
+    }
+
+    fn serde_path_to_pointer(path: &serde_path_to_error::Path) -> String {
+        let mut pointer = String::new();
+        for segment in path {
+            pointer.push('/');
+            match segment {
+                serde_path_to_error::Segment::Seq { index } => {
+                    pointer.push_str(&index.to_string());
+                }
+                serde_path_to_error::Segment::Map { key } => {
+                    pointer.push_str(&Self::escape_pointer_segment(key));
+                }
+                serde_path_to_error::Segment::Enum { variant } => {
+                    pointer.push_str(&Self::escape_pointer_segment(variant));
+                }
+                serde_path_to_error::Segment::Unknown => pointer.push('?'),
+            }
+        }
+        pointer
+    }
+
+    fn escape_pointer_segment(segment: &str) -> String {
+        segment.replace('~', "~0").replace('/', "~1")
+    }
+
+    fn unknown_field_name(message: &str) -> Option<&str> {
+        let start = message.find("unknown field `")? + "unknown field `".len();
+        let rest = &message[start..];
+        Some(&rest[..rest.find('`')?])
     }
 
     fn invalid_object<T>(path: &str, reason: impl Into<String>) -> Result<T> {

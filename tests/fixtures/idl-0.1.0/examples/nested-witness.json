@@ -1,0 +1,1 @@
+{"idl_version":"0.1.0","interfaces":[{"encoding":{"id":"ckb-idl-linear-0.1.0"},"fields":[{"fields":[{"name":"signature","required":true,"type":"secp256k1_sig","wire_type":"bytes_fixed_65"},{"name":"unlock_after_ms","required":true,"type":"uint64"}],"name":"authorization","required":true,"type":"struct"}],"id":"lock_witness","kind":"witness_args.lock"}]}

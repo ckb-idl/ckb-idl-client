@@ -497,22 +497,11 @@ impl IdlClient {
     }
 
     fn vector_item_size(item: &VectorItem, field_name: &str) -> Result<usize> {
-        match item.structural_type() {
-            "uint16" => Ok(2),
-            "uint32" => Ok(4),
-            "uint64" => Ok(8),
-            "uint128" => Ok(16),
-            type_ if type_.starts_with("bytes_fixed_") => {
-                fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
-                    field: field_name.to_string(),
-                    type_: type_.to_string(),
-                })
-            }
-            type_ => Err(IdlError::UnknownType {
-                field: field_name.to_string(),
-                type_: type_.to_string(),
-            }),
-        }
+        let type_ = item.structural_type();
+        fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
+            field: field_name.to_string(),
+            type_: type_.to_string(),
+        })
     }
 
     fn decode_vector_item(
@@ -522,6 +511,7 @@ impl IdlClient {
         cursor: &mut usize,
     ) -> Result<DecodedValue> {
         match item.structural_type() {
+            "uint8" => Ok(DecodedValue::U8(Self::take(raw, cursor, 1, field_name)?[0])),
             "uint16" => Ok(DecodedValue::U16(u16::from_le_bytes(
                 Self::take(raw, cursor, 2, field_name)?.try_into().unwrap(),
             ))),
@@ -532,7 +522,7 @@ impl IdlClient {
             "uint128" => Ok(DecodedValue::U128(u128::from_le_bytes(
                 Self::take(raw, cursor, 16, field_name)?.try_into().unwrap(),
             ))),
-            type_ if type_.starts_with("bytes_fixed_") => {
+            type_ => {
                 let size = fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
                     field: field_name.to_string(),
                     type_: type_.to_string(),
@@ -541,10 +531,6 @@ impl IdlClient {
                     Self::take(raw, cursor, size, field_name)?.to_vec(),
                 ))
             }
-            type_ => Err(IdlError::UnknownType {
-                field: field_name.to_string(),
-                type_: type_.to_string(),
-            }),
         }
     }
 
@@ -837,6 +823,41 @@ mod tests {
     }
 
     // ── verify unit test (existing) ──────────────────────────────────────────
+
+    #[test]
+    fn vectors_accept_uint8_and_other_fixed_size_types() {
+        let client = IdlClient::new();
+
+        let mut flags = field("flags", "vector", true);
+        flags.items = Some(Box::new(VectorItem {
+            type_: "uint8".to_string(),
+            wire_type: None,
+        }));
+
+        let mut signatures = field("signatures", "vector", true);
+        signatures.items = Some(Box::new(VectorItem {
+            type_: "secp256k1_sig".to_string(),
+            wire_type: None,
+        }));
+
+        let signature = vec![0x55; 65];
+        let mut wire = 2u32.to_le_bytes().to_vec();
+        wire.extend_from_slice(&[1, 2]);
+        wire.extend_from_slice(&1u32.to_le_bytes());
+        wire.extend_from_slice(&signature);
+
+        let decoded = client
+            .validate_witness_bytes(&[flags, signatures], &wire)
+            .unwrap();
+        assert_eq!(
+            decoded[0].value,
+            DecodedValue::Vector(vec![DecodedValue::U8(1), DecodedValue::U8(2)])
+        );
+        assert_eq!(
+            decoded[1].value,
+            DecodedValue::Vector(vec![DecodedValue::Bytes(signature)])
+        );
+    }
 
     #[test]
     fn test_verify_minimal() {

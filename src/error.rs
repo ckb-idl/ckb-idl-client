@@ -18,8 +18,8 @@ pub enum IdlError {
     #[error("hash mismatch: computed {computed}, expected {expected}")]
     HashMismatch { computed: String, expected: String },
 
-    /// The code cell data is too short to contain a 32-byte IDL commitment.
-    #[error("insufficient data: code_cell_data has {actual} bytes, need at least 32")]
+    /// The code cell data is too short to contain the 46-byte IDL binding trailer.
+    #[error("insufficient data: code_cell_data has {actual} bytes, need at least 46")]
     InsufficientData { actual: usize },
 
     #[error("invalid IDL binding trailer: {reason}")]

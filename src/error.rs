@@ -28,6 +28,9 @@ pub enum IdlError {
     #[error("IDL document bytes are valid JSON but are not RFC 8785 canonical bytes")]
     NonCanonicalDocument,
 
+    #[error("invalid IDL document at `{path}`: {reason}")]
+    InvalidDocument { path: String, reason: String },
+
     // ── Witness validation errors ────────────────────────────────────────────
     /// The witness buffer ran out of bytes while decoding a field.
     ///

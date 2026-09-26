@@ -13,17 +13,28 @@ fn arb_string() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9_\\-\\.]{0,32}".prop_map(|s| s.to_string())
 }
 
+fn arb_identifier() -> impl Strategy<Value = String> {
+    "[a-zA-Z_][a-zA-Z0-9_]{0,31}".prop_map(|s| s.to_string())
+}
+
 pub fn arb_witness_field() -> impl Strategy<Value = WitnessField> {
     (
-        arb_string(),
-        arb_string(),
-        any::<bool>(),
+        arb_identifier(),
+        prop::sample::select(vec![
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64",
+            "uint128",
+            "bytes",
+            "bytes_fixed_32",
+        ]),
         proptest::option::of(arb_string()),
     )
-        .prop_map(|(name, type_, required, description)| WitnessField {
+        .prop_map(|(name, type_, description)| WitnessField {
             name,
-            type_,
-            required,
+            type_: type_.to_string(),
+            required: true,
             description,
             items: None,
             fields: None,

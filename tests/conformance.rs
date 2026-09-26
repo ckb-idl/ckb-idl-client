@@ -230,6 +230,16 @@ fn passes_normative_flat_bytes_vector() {
 }
 
 #[test]
+fn document_parser_rejects_trailing_input() {
+    let mut bytes = std::fs::read(fixture_root().join("examples/flat-witness.json")).unwrap();
+    bytes.extend_from_slice(b"{}");
+
+    let error = IdlClient::parse_document(&bytes).unwrap_err();
+    assert_eq!(error.category(), "invalid_document");
+    assert_eq!(error.path(), "");
+}
+
+#[test]
 fn canonical_example_hashes_match_manifest() {
     let root = fixture_root();
     let manifest = read_json(root.join("canonicalization-fixtures.json"));

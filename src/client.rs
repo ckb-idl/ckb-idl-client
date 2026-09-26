@@ -92,7 +92,7 @@ impl IdlClient {
 
     pub fn parse_document(idl_bytes: &[u8]) -> Result<IdlDocument> {
         let mut deserializer = serde_json::Deserializer::from_slice(idl_bytes);
-        serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        let document = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
             let mut path = Self::serde_path_to_pointer(error.path());
             let message = error.inner().to_string();
             if let Some(unknown) = Self::unknown_field_name(&message) {
@@ -105,7 +105,14 @@ impl IdlClient {
                 path,
                 reason: message,
             }
-        })
+        })?;
+        deserializer
+            .end()
+            .map_err(|error| IdlError::InvalidDocument {
+                path: String::new(),
+                reason: error.to_string(),
+            })?;
+        Ok(document)
     }
 
     pub fn verify_commitment(idl_bytes: &[u8], code_cell_data: &[u8]) -> Result<()> {
@@ -747,7 +754,7 @@ impl IdlClient {
             );
         }
         encoded.extend_from_slice(&tag.to_le_bytes());
-        Self::encode_fields(&variant.fields, value, path, encoded)
+        Self::encode_fields(&variant.fields, value, &format!("{path}/value"), encoded)
     }
 
     fn child_path(parent: &str, field: &str) -> String {

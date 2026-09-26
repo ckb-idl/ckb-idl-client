@@ -81,6 +81,22 @@ async fn prop_fetch_rejects_document_with_empty_interface() {
     assert!(matches!(result, Err(IdlError::MissingLockWitnessInterface)));
 }
 
+#[tokio::test]
+async fn fetch_revalidates_cached_document() {
+    let code_hash = [0x02u8; 32];
+    let mut client = IdlClient::new();
+    client.cache.insert(
+        code_hash,
+        ckb_idl_client::IdlDocument {
+            idl_version: "0.1.0".to_string(),
+            interfaces: vec![],
+        },
+    );
+
+    let result = client.fetch("http://unused.invalid", code_hash).await;
+    assert!(matches!(result, Err(IdlError::MissingLockWitnessInterface)));
+}
+
 // Property 7: Fetch propagates HTTP error status codes.
 // When the indexer returns a 4xx or 5xx status, fetch must return
 // Err(IdlError::HttpError { status }) with the matching status code.

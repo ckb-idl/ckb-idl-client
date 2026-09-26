@@ -130,6 +130,7 @@ proptest! {
                     let expected = u64::from_le_bytes(expected_bytes[..8].try_into().unwrap());
                     prop_assert_eq!(*v, expected, "field {} u64 mismatch", i);
                 }
+                other => prop_assert!(false, "unexpected decoded value for field {}: {:?}", i, other),
             }
         }
     }

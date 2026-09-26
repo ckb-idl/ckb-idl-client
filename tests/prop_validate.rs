@@ -56,7 +56,7 @@ fn arb_any_field() -> impl Strategy<Value = (&'static str, Vec<u8>)> {
 
 // Property: validate_witness_bytes succeeds on correctly encoded buffers.
 // For any sequence of known-type fields encoded with the standard wire format,
-// decode must succeed and return one ValidatedField per input field.
+// decode must succeed and return one DecodedField per input field.
 proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(128))]
     #[test]

@@ -12,9 +12,7 @@ fn encode_wire(fields: &[(&str, Vec<u8>)]) -> Vec<u8> {
             "uint8" => buf.extend_from_slice(bytes),
             "uint32" => buf.extend_from_slice(bytes),
             "uint64" => buf.extend_from_slice(bytes),
-            "secp256k1_sig" | "secp256k1_pubkey" | "schnorr_sig" => {
-                buf.extend_from_slice(bytes)
-            }
+            "secp256k1_sig" | "secp256k1_pubkey" | "schnorr_sig" => buf.extend_from_slice(bytes),
             "bytes" => {
                 let len = bytes.len() as u32;
                 buf.extend_from_slice(&len.to_le_bytes());
@@ -42,15 +40,13 @@ fn arb_fixed_field() -> impl Strategy<Value = (&'static str, Vec<u8>)> {
     let types = known_types();
     (0..types.len()).prop_flat_map(move |i| {
         let (type_, size) = types[i];
-        proptest::collection::vec(any::<u8>(), size..=size)
-            .prop_map(move |bytes| (type_, bytes))
+        proptest::collection::vec(any::<u8>(), size..=size).prop_map(move |bytes| (type_, bytes))
     })
 }
 
 /// Strategy: generate a `bytes` field with a random payload 0–128 bytes.
 fn arb_bytes_field() -> impl Strategy<Value = (&'static str, Vec<u8>)> {
-    proptest::collection::vec(any::<u8>(), 0..128)
-        .prop_map(|bytes| ("bytes", bytes))
+    proptest::collection::vec(any::<u8>(), 0..128).prop_map(|bytes| ("bytes", bytes))
 }
 
 /// Strategy: either a fixed or variable field.
@@ -75,6 +71,10 @@ proptest! {
                 type_: t.to_string(),
                 required: true,
                 description: None,
+                items: None,
+                fields: None,
+                variants: None,
+                wire_type: None,
             }
         }).collect();
 
@@ -101,6 +101,10 @@ proptest! {
                 type_: t.to_string(),
                 required: true,
                 description: None,
+                items: None,
+                fields: None,
+                variants: None,
+                wire_type: None,
             }
         }).collect();
 
@@ -126,6 +130,7 @@ proptest! {
                     let expected = u64::from_le_bytes(expected_bytes[..8].try_into().unwrap());
                     prop_assert_eq!(*v, expected, "field {} u64 mismatch", i);
                 }
+                other => prop_assert!(false, "unexpected decoded value for field {}: {:?}", i, other),
             }
         }
     }
@@ -147,6 +152,10 @@ proptest! {
             type_: "secp256k1_sig".to_string(),
             required: true,
             description: None,
+            items: None,
+                fields: None,
+                variants: None,
+                wire_type: None,
         }];
 
         // Any buffer shorter than 65 bytes must fail for a secp256k1_sig field.
@@ -174,6 +183,10 @@ proptest! {
             type_: "uint8".to_string(),
             required: true,
             description: None,
+            items: None,
+            fields: None,
+            variants: None,
+            wire_type: None,
         }];
 
         let mut buf = vec![val];

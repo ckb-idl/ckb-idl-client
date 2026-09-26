@@ -1,11 +1,13 @@
 pub mod client;
 pub mod error;
+pub mod interface;
 pub mod types;
 
 pub use crate::client::IdlClient;
 pub use crate::error::IdlError;
 pub use crate::types::{
-    DecodedValue, IdlDocument, SigningInfo, ValidatedField, WitnessField,
+    DecodedValue, IdlDocument, IdlInterface, InterfaceKind, SigningInfo, ValidatedField,
+    WitnessField,
 };
 
 pub type Result<T> = std::result::Result<T, IdlError>;

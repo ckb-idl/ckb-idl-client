@@ -41,7 +41,7 @@ fn fixed_size_for_type(type_: &str) -> Option<usize> {
 
 pub struct IdlClient {
     pub http: reqwest::Client,
-    pub cache: HashMap<[u8; 32], IdlDocument>,
+    cache: HashMap<[u8; 32], IdlDocument>,
 }
 
 impl IdlClient {
@@ -50,25 +50,6 @@ impl IdlClient {
             http: reqwest::Client::new(),
             cache: HashMap::new(),
         }
-    }
-
-    pub async fn fetch(&self, indexer_url: &str, code_hash: [u8; 32]) -> Result<IdlDocument> {
-        if let Some(doc) = self.cache.get(&code_hash) {
-            doc.lock_witness()?;
-            return Ok(doc.clone());
-        }
-        let url = format!("{}/idl/{}", indexer_url, hex::encode(code_hash));
-        let res = self.http.get(&url).send().await?;
-
-        if !res.status().is_success() {
-            return Err(crate::IdlError::HttpError {
-                status: res.status().as_u16(),
-            });
-        }
-
-        let doc = res.json::<IdlDocument>().await?;
-        doc.lock_witness()?;
-        Ok(doc)
     }
 
     pub async fn fetch_bytes(&self, registry_url: &str, code_hash: [u8; 32]) -> Result<Vec<u8>> {
@@ -84,6 +65,16 @@ impl IdlClient {
         Ok(response.bytes().await?.to_vec())
     }
 
+    pub async fn fetch_verify_and_cache(
+        &mut self,
+        registry_url: &str,
+        code_hash: [u8; 32],
+        code_cell_data: &[u8],
+    ) -> Result<&IdlDocument> {
+        let idl_bytes = self.fetch_bytes(registry_url, code_hash).await?;
+        self.verify_and_cache(code_hash, &idl_bytes, code_cell_data)
+    }
+
     pub fn verify_and_cache(
         &mut self,
         code_hash: [u8; 32],
@@ -92,7 +83,7 @@ impl IdlClient {
     ) -> Result<&IdlDocument> {
         Self::verify_commitment(idl_bytes, code_cell_data)?;
         let document: IdlDocument = serde_json::from_slice(idl_bytes)?;
-        document.lock_witness()?; // version/interface/encoding validation
+        document.validate()?;
 
         self.cache.insert(code_hash, document);
 
@@ -350,11 +341,22 @@ impl IdlClient {
     }
 
     fn vector_item_size(item: &VectorItem, field_name: &str) -> Result<usize> {
-        let type_ = item.structural_type();
-        fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
-            field: field_name.to_string(),
-            type_: type_.to_string(),
-        })
+        match item.structural_type() {
+            "uint16" => Ok(2),
+            "uint32" => Ok(4),
+            "uint64" => Ok(8),
+            "uint128" => Ok(16),
+            type_ if type_.starts_with("bytes_fixed_") => {
+                fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
+                    field: field_name.to_string(),
+                    type_: type_.to_string(),
+                })
+            }
+            type_ => Err(IdlError::UnknownType {
+                field: field_name.to_string(),
+                type_: type_.to_string(),
+            }),
+        }
     }
 
     fn decode_vector_item(
@@ -364,7 +366,6 @@ impl IdlClient {
         cursor: &mut usize,
     ) -> Result<DecodedValue> {
         match item.structural_type() {
-            "uint8" => Ok(DecodedValue::U8(Self::take(raw, cursor, 1, field_name)?[0])),
             "uint16" => Ok(DecodedValue::U16(u16::from_le_bytes(
                 Self::take(raw, cursor, 2, field_name)?.try_into().unwrap(),
             ))),
@@ -375,7 +376,7 @@ impl IdlClient {
             "uint128" => Ok(DecodedValue::U128(u128::from_le_bytes(
                 Self::take(raw, cursor, 16, field_name)?.try_into().unwrap(),
             ))),
-            type_ => {
+            type_ if type_.starts_with("bytes_fixed_") => {
                 let size = fixed_size_for_type(type_).ok_or_else(|| IdlError::UnknownType {
                     field: field_name.to_string(),
                     type_: type_.to_string(),
@@ -384,6 +385,10 @@ impl IdlClient {
                     Self::take(raw, cursor, size, field_name)?.to_vec(),
                 ))
             }
+            type_ => Err(IdlError::UnknownType {
+                field: field_name.to_string(),
+                type_: type_.to_string(),
+            }),
         }
     }
 
@@ -457,7 +462,7 @@ impl IdlClient {
         idl: IdlDocument,
         raw_witness: &[u8],
     ) -> Result<Vec<ValidatedField>> {
-        let interface = idl.lock_witness()?;
+        let interface = idl.validate()?;
         self.validate_witness_bytes(&interface.fields, raw_witness)
     }
 }
@@ -678,7 +683,7 @@ mod tests {
     // ── verify unit test (existing) ──────────────────────────────────────────
 
     #[test]
-    fn vectors_accept_uint8_and_other_fixed_size_types() {
+    fn vectors_reject_uint8_but_accept_semantic_fixed_bytes() {
         let client = IdlClient::new();
 
         let mut flags = field("flags", "vector", true);
@@ -686,28 +691,26 @@ mod tests {
             type_: "uint8".to_string(),
             wire_type: None,
         }));
+        let mut flags_wire = 2u32.to_le_bytes().to_vec();
+        flags_wire.extend_from_slice(&[1, 2]);
+        assert!(matches!(
+            client.validate_witness_bytes(&[flags], &flags_wire),
+            Err(IdlError::UnknownType { .. })
+        ));
 
         let mut signatures = field("signatures", "vector", true);
         signatures.items = Some(Box::new(VectorItem {
             type_: "secp256k1_sig".to_string(),
-            wire_type: None,
+            wire_type: Some("bytes_fixed_65".to_string()),
         }));
 
         let signature = vec![0x55; 65];
-        let mut wire = 2u32.to_le_bytes().to_vec();
-        wire.extend_from_slice(&[1, 2]);
-        wire.extend_from_slice(&1u32.to_le_bytes());
+        let mut wire = 1u32.to_le_bytes().to_vec();
         wire.extend_from_slice(&signature);
 
-        let decoded = client
-            .validate_witness_bytes(&[flags, signatures], &wire)
-            .unwrap();
+        let decoded = client.validate_witness_bytes(&[signatures], &wire).unwrap();
         assert_eq!(
             decoded[0].value,
-            DecodedValue::Vector(vec![DecodedValue::U8(1), DecodedValue::U8(2)])
-        );
-        assert_eq!(
-            decoded[1].value,
             DecodedValue::Vector(vec![DecodedValue::Bytes(signature)])
         );
     }

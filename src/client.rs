@@ -584,7 +584,7 @@ impl IdlClient {
                     value,
                 },
             ) => Self::encode_union(field, *tag, variant, value, path, encoded)?,
-            (type_, DecodedValue::Bytes(bytes)) if fixed_size_for_type(type_).is_some() => {
+            (type_, DecodedValue::Bytes(bytes)) if type_.starts_with("bytes_fixed_") => {
                 let expected = fixed_size_for_type(type_).unwrap();
                 if bytes.len() != expected {
                     return Self::invalid_object(
@@ -733,7 +733,7 @@ impl IdlClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DecodedValue;
+    use crate::types::{EncodingProfile, IdlInterface, InterfaceKind, UnionVariant};
 
     fn field(name: &str, type_: &str, required: bool) -> WitnessField {
         WitnessField {
@@ -746,6 +746,32 @@ mod tests {
             wire_type: None,
             items: None,
         }
+    }
+
+    fn document(fields: Vec<WitnessField>) -> IdlDocument {
+        IdlDocument {
+            idl_version: "0.1.0".to_string(),
+            interfaces: vec![IdlInterface {
+                id: "lock_witness".to_string(),
+                kind: InterfaceKind::WitnessArgsLock,
+                encoding: EncodingProfile {
+                    id: "ckb-idl-linear-0.1.0".to_string(),
+                },
+                fields,
+            }],
+        }
+    }
+
+    fn object(fields: Vec<(&str, DecodedValue)>) -> WitnessObject {
+        WitnessObject::new(
+            fields
+                .into_iter()
+                .map(|(name, value)| DecodedField {
+                    name: name.to_string(),
+                    value,
+                })
+                .collect(),
+        )
     }
 
     // ── validate_witness_bytes unit tests ────────────────────────────────────
@@ -979,6 +1005,118 @@ mod tests {
             decoded[0].value,
             DecodedValue::Vector(vec![DecodedValue::Bytes(signature)])
         );
+    }
+
+    #[test]
+    fn witness_object_roundtrips_through_encoder() {
+        let client = IdlClient::new();
+
+        let mut values = field("values", "vector", true);
+        values.items = Some(Box::new(VectorItem {
+            type_: "uint32".to_string(),
+            wire_type: None,
+        }));
+
+        let mut payload = field("payload", "struct", true);
+        payload.fields = Some(vec![
+            field("amount", "uint128", true),
+            field("memo", "bytes", false),
+        ]);
+
+        let mut authorization = field("authorization", "union", true);
+        authorization.variants = Some(vec![UnionVariant {
+            tag: 7,
+            name: "Transfer".to_string(),
+            fields: vec![payload],
+        }]);
+
+        let document = document(vec![field("nonce", "uint16", true), values, authorization]);
+        let object = object(vec![
+            ("nonce", DecodedValue::U16(9)),
+            (
+                "values",
+                DecodedValue::Vector(vec![DecodedValue::U32(10), DecodedValue::U32(20)]),
+            ),
+            (
+                "authorization",
+                DecodedValue::Union {
+                    tag: 7,
+                    variant: "Transfer".to_string(),
+                    value: object(vec![(
+                        "payload",
+                        DecodedValue::Struct(object(vec![
+                            ("amount", DecodedValue::U128(123)),
+                            (
+                                "memo",
+                                DecodedValue::Optional(Some(Box::new(DecodedValue::Bytes(
+                                    b"hello".to_vec(),
+                                )))),
+                            ),
+                        ])),
+                    )]),
+                },
+            ),
+        ]);
+
+        let wire = client.encode_lock_witness(&document, &object).unwrap();
+        assert_eq!(
+            client.decode_lock_witness(&document, &wire).unwrap(),
+            object
+        );
+    }
+
+    #[test]
+    fn encoder_preserves_absent_trailing_optionals() {
+        let client = IdlClient::new();
+        let document = document(vec![
+            field("nonce", "uint16", true),
+            field("memo", "bytes", false),
+        ]);
+        let object = object(vec![
+            ("nonce", DecodedValue::U16(9)),
+            ("memo", DecodedValue::Optional(None)),
+        ]);
+
+        let wire = client.encode_lock_witness(&document, &object).unwrap();
+        assert_eq!(wire, 9u16.to_le_bytes());
+        assert_eq!(
+            client.decode_lock_witness(&document, &wire).unwrap(),
+            object
+        );
+    }
+
+    #[test]
+    fn encoder_rejects_invalid_object_shapes() {
+        let client = IdlClient::new();
+        let nonce_document = document(vec![field("nonce", "uint16", true)]);
+
+        for invalid in [
+            object(vec![]),
+            object(vec![("other", DecodedValue::U16(9))]),
+            object(vec![("nonce", DecodedValue::U32(9))]),
+            object(vec![("nonce", DecodedValue::Bytes(vec![9, 0]))]),
+        ] {
+            assert!(matches!(
+                client.encode_lock_witness(&nonce_document, &invalid),
+                Err(IdlError::InvalidObject { .. })
+            ));
+        }
+
+        let optionals = document(vec![
+            field("first", "bytes", false),
+            field("second", "bytes", false),
+        ]);
+        let gap = object(vec![
+            ("first", DecodedValue::Optional(None)),
+            (
+                "second",
+                DecodedValue::Optional(Some(Box::new(DecodedValue::Bytes(vec![])))),
+            ),
+        ]);
+        assert!(matches!(
+            client.encode_lock_witness(&optionals, &gap),
+            Err(IdlError::InvalidObject { .. })
+        ));
     }
 
     #[test]

@@ -7,7 +7,7 @@ pub use crate::client::IdlClient;
 pub use crate::error::IdlError;
 pub use crate::types::{
     DecodedField, DecodedValue, IdlDocument, IdlInterface, InterfaceKind, SigningInfo,
-    ValidatedField, WitnessField, WitnessObject,
+    WitnessField, WitnessObject,
 };
 
 pub type Result<T> = std::result::Result<T, IdlError>;

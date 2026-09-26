@@ -2,13 +2,19 @@ use crate::{IdlDocument, IdlError, IdlInterface, InterfaceKind, WitnessField, ty
 
 impl WitnessField {
     pub fn structural_type(&self) -> &str {
-        self.wire_type.as_deref().unwrap_or(self.type_.as_str())
+        self.wire_type
+            .as_deref()
+            .or_else(|| semantic_wire_type(&self.type_))
+            .unwrap_or(self.type_.as_str())
     }
 }
 
 impl VectorItem {
     pub fn structural_type(&self) -> &str {
-        self.wire_type.as_deref().unwrap_or(self.type_.as_str())
+        self.wire_type
+            .as_deref()
+            .or_else(|| semantic_wire_type(&self.type_))
+            .unwrap_or(self.type_.as_str())
     }
 }
 
@@ -62,6 +68,15 @@ fn validate_fields(fields: &[WitnessField], path: &str) -> Result<(), IdlError> 
 
     for (index, field) in fields.iter().enumerate() {
         let field_path = format!("{path}/{index}");
+        if fields[..index]
+            .iter()
+            .any(|previous| previous.name == field.name)
+        {
+            return invalid(
+                format!("{field_path}/name"),
+                "field names must be unique within a record",
+            );
+        }
         if seen_nested {
             return invalid(
                 field_path,
@@ -136,6 +151,15 @@ fn validate_field(field: &WitnessField, path: &str) -> Result<(), IdlError> {
             for (index, variant) in variants.iter().enumerate() {
                 let variant_path = format!("{path}/variants/{index}");
                 validate_identifier(&variant.name, &format!("{variant_path}/name"))?;
+                if variants[..index]
+                    .iter()
+                    .any(|previous| previous.name == variant.name)
+                {
+                    return invalid(
+                        format!("{variant_path}/name"),
+                        "union variant names must be unique",
+                    );
+                }
                 if previous_tag.is_some_and(|tag| variant.tag <= tag) {
                     return invalid(
                         format!("{variant_path}/tag"),
@@ -382,6 +406,13 @@ mod tests {
                     field("nonce", "uint8", true),
                 ]),
                 "/interfaces/0/fields/1/required",
+            ),
+            (
+                document(vec![
+                    field("nonce", "uint8", true),
+                    field("nonce", "uint16", true),
+                ]),
+                "/interfaces/0/fields/1/name",
             ),
             (
                 {

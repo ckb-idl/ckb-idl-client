@@ -109,7 +109,7 @@ pub enum DecodedValue {
         variant: String,
         value: WitnessObject,
     },
-    /// A trailing optional field that is absent because the input is exhausted.
+    /// A trailing optional field, either absent or carrying its decoded value.
     Optional(Option<Box<DecodedValue>>),
 }
 
@@ -154,4 +154,28 @@ impl<'a> IntoIterator for &'a WitnessObject {
     }
 }
 
-pub type ValidatedField = DecodedField;
+impl IntoIterator for WitnessObject {
+    type Item = DecodedField;
+    type IntoIter = std::vec::IntoIter<DecodedField>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.fields.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn witness_object_supports_borrowed_and_owned_iteration() {
+        let object = WitnessObject::new(vec![DecodedField {
+            name: "nonce".to_string(),
+            value: DecodedValue::U16(7),
+        }]);
+
+        assert_eq!((&object).into_iter().next().unwrap().name, "nonce");
+        let fields: Vec<_> = object.into_iter().collect();
+        assert_eq!(fields[0].value, DecodedValue::U16(7));
+    }
+}

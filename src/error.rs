@@ -1,5 +1,11 @@
+//! Errors returned while fetching, verifying, validating, decoding, and encoding IDLs.
+
 use thiserror::Error;
 
+/// All failures reported by the IDL client.
+///
+/// [`IdlError::category`] and [`IdlError::path`] expose the stable protocol
+/// representation used by conformance vectors and cross-language clients.
 #[derive(Debug, Error)]
 pub enum IdlError {
     /// An HTTP request to the indexer failed at the network/transport level.
@@ -22,22 +28,26 @@ pub enum IdlError {
     #[error("insufficient data: code_cell_data has {actual} bytes, need at least 46")]
     InsufficientData { actual: usize },
 
+    /// The code-cell binding trailer is malformed or unsupported.
     #[error("invalid IDL binding trailer: {reason}")]
     InvalidTrailer { reason: &'static str },
 
+    /// JSON bytes are valid JSON but are not the required RFC 8785 artifact.
     #[error("IDL document bytes are valid JSON but are not RFC 8785 canonical bytes")]
     NonCanonicalDocument,
 
+    /// The parsed IDL violates the normative document schema.
     #[error("invalid IDL document at `{path}`: {reason}")]
     InvalidDocument { path: String, reason: String },
 
+    /// A caller-supplied witness object does not match its IDL schema.
     #[error("invalid witness object at `{path}`: {reason}")]
     InvalidObject { path: String, reason: String },
 
     // ── Witness validation errors ────────────────────────────────────────────
     /// The witness buffer ran out of bytes while decoding a field.
     ///
-    /// `field` is the IDL field name. `expected` is how many bytes were needed,
+    /// `path` identifies the logical field. `expected` is how many bytes were needed,
     /// `got` is how many bytes remained in the buffer.
     #[error("witness too short at `{path}`: need {expected} bytes, have {got}")]
     FieldTooShort {
@@ -53,18 +63,19 @@ pub enum IdlError {
     #[error("unknown IDL type `{type_}` at `{path}`")]
     UnknownType { path: String, type_: String },
 
-    /// A structural type is missing the metadata needed to decode it.
+    /// A low-level field schema is missing metadata required for decoding.
     #[error("invalid schema at `{path}`: {reason}")]
     InvalidFieldSchema { path: String, reason: &'static str },
 
-    /// Encoded vectors must contain at least one element.
+    /// An encoded vector contains a prohibited element count.
     #[error("vector at `{path}` has invalid element count {count}")]
     InvalidVectorCount { path: String, count: usize },
 
-    /// A union tag does not identify any declared variant.
+    /// A union tag does not identify a declared variant.
     #[error("unknown union tag {tag} at `{path}`")]
     UnknownUnionTag { path: String, tag: u32 },
 
+    /// A length prefix cannot represent a valid field span.
     #[error("invalid length at `{path}`")]
     InvalidLength { path: String },
 
@@ -82,7 +93,7 @@ pub enum IdlError {
         field_count: usize,
     },
 
-    /// Unsupported IDL version
+    /// The document uses an unsupported IDL version.
     #[error("unsupported IDL version `{version}`")]
     UnsupportedVersion { version: String },
 
@@ -100,6 +111,7 @@ pub enum IdlError {
 }
 
 impl IdlError {
+    /// Returns the stable snake-case error category defined by IDL 0.1.0.
     pub fn category(&self) -> &'static str {
         match self {
             Self::NetworkError(_) => "network_error",
@@ -126,6 +138,9 @@ impl IdlError {
         }
     }
 
+    /// Returns the RFC 6901 logical or document path associated with the error.
+    ///
+    /// Whole-document and whole-buffer errors return the empty string.
     pub fn path(&self) -> &str {
         match self {
             Self::InvalidDocument { path, .. }
@@ -147,3 +162,7 @@ impl IdlError {
         }
     }
 }
+    /// The document has no `witness_args.lock` interface.
+    /// The document has more than one `witness_args.lock` interface.
+    /// The selected interface uses an unsupported encoding profile.
+    /// No commitment-verified document is cached under the requested code hash.

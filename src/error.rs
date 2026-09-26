@@ -31,6 +31,9 @@ pub enum IdlError {
     #[error("invalid IDL document at `{path}`: {reason}")]
     InvalidDocument { path: String, reason: String },
 
+    #[error("invalid witness object at `{path}`: {reason}")]
+    InvalidObject { path: String, reason: String },
+
     // ── Witness validation errors ────────────────────────────────────────────
     /// The witness buffer ran out of bytes while decoding a field.
     ///

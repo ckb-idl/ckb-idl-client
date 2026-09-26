@@ -102,30 +102,56 @@ pub enum DecodedValue {
     /// A count-prefixed typed vector.
     Vector(Vec<DecodedValue>),
     /// A nested struct, retaining declaration order.
-    Struct(Vec<ValidatedField>),
+    Struct(WitnessObject),
     /// A tagged union and the fields of its selected variant.
     Union {
         tag: u32,
         variant: String,
-        fields: Vec<ValidatedField>,
+        value: WitnessObject,
     },
     /// A trailing optional field that is absent because the input is exhausted.
     Optional(Option<Box<DecodedValue>>),
 }
 
-/// One structurally validated witness field.
-///
-/// A `ValidatedField` is only produced for fields that decoded successfully.
-/// If any required field fails to decode, `validate_witness_bytes` returns
-/// an error before producing any output.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ValidatedField {
-    /// The field name from the IDL.
+pub struct DecodedField {
     pub name: String,
-    /// The IDL type string (e.g. `"secp256k1_sig"`, `"uint64"`, `"bytes"`).
-    pub type_: String,
-    /// Whether this field was marked required in the IDL.
-    pub required: bool,
-    /// The decoded bytes/value.
     pub value: DecodedValue,
 }
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WitnessObject {
+    pub fields: Vec<DecodedField>,
+}
+
+impl WitnessObject {
+    pub fn new(fields: Vec<DecodedField>) -> Self {
+        Self { fields }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&DecodedValue> {
+        self.fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| &field.value)
+    }
+}
+
+impl std::ops::Deref for WitnessObject {
+    type Target = [DecodedField];
+
+    fn deref(&self) -> &Self::Target {
+        &self.fields
+    }
+}
+
+impl<'a> IntoIterator for &'a WitnessObject {
+    type Item = &'a DecodedField;
+    type IntoIter = std::slice::Iter<'a, DecodedField>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.fields.iter()
+    }
+}
+
+pub type ValidatedField = DecodedField;

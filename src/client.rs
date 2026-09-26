@@ -1,6 +1,6 @@
 use crate::{
     IdlDocument, IdlError, Result, WitnessField,
-    types::{DecodedValue, ValidatedField, VectorItem},
+    types::{DecodedField, DecodedValue, VectorItem, WitnessObject},
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -208,13 +208,12 @@ impl IdlClient {
     ///
     /// # Returns
     ///
-    /// A `Vec<ValidatedField>` in the same order as the IDL `fields` slice,
-    /// with the decoded value for each field.
+    /// A `WitnessObject` in the same order as the IDL `fields` slice.
     pub fn validate_witness_bytes(
         &self,
         fields: &[WitnessField],
         raw_witness: &[u8],
-    ) -> Result<Vec<ValidatedField>> {
+    ) -> Result<WitnessObject> {
         let mut cursor = 0usize;
         let validated = Self::decode_fields_at(fields, raw_witness, &mut cursor)?;
 
@@ -234,23 +233,25 @@ impl IdlClient {
         fields: &[WitnessField],
         raw: &[u8],
         cursor: &mut usize,
-    ) -> Result<Vec<ValidatedField>> {
+    ) -> Result<WitnessObject> {
         let mut validated = Vec::with_capacity(fields.len());
         for field in fields {
             let value = if !field.required && *cursor == raw.len() {
                 DecodedValue::Optional(None)
             } else {
                 let value = Self::decode_value(field, raw, cursor)?;
-                value
+                if field.required {
+                    value
+                } else {
+                    DecodedValue::Optional(Some(Box::new(value)))
+                }
             };
-            validated.push(ValidatedField {
+            validated.push(DecodedField {
                 name: field.name.clone(),
-                type_: field.type_.clone(),
-                required: field.required,
                 value,
             });
         }
-        Ok(validated)
+        Ok(WitnessObject::new(validated))
     }
 
     fn decode_value(field: &WitnessField, raw: &[u8], cursor: &mut usize) -> Result<DecodedValue> {
@@ -418,7 +419,7 @@ impl IdlClient {
         Ok(DecodedValue::Union {
             tag,
             variant: variant.name.clone(),
-            fields: Self::decode_fields_at(&variant.fields, raw, cursor)?,
+            value: Self::decode_fields_at(&variant.fields, raw, cursor)?,
         })
     }
 
@@ -461,9 +462,271 @@ impl IdlClient {
         &self,
         idl: IdlDocument,
         raw_witness: &[u8],
-    ) -> Result<Vec<ValidatedField>> {
+    ) -> Result<WitnessObject> {
+        self.decode_lock_witness(&idl, raw_witness)
+    }
+
+    pub fn decode_lock_witness(
+        &self,
+        idl: &IdlDocument,
+        raw_witness: &[u8],
+    ) -> Result<WitnessObject> {
         let interface = idl.validate()?;
         self.validate_witness_bytes(&interface.fields, raw_witness)
+    }
+
+    pub fn encode_lock_witness(
+        &self,
+        idl: &IdlDocument,
+        object: &WitnessObject,
+    ) -> Result<Vec<u8>> {
+        let interface = idl.validate()?;
+        let mut encoded = Vec::new();
+        Self::encode_fields(&interface.fields, object, "", &mut encoded)?;
+        Ok(encoded)
+    }
+
+    fn encode_fields(
+        fields: &[WitnessField],
+        object: &WitnessObject,
+        parent_path: &str,
+        encoded: &mut Vec<u8>,
+    ) -> Result<()> {
+        if object.fields.len() != fields.len() {
+            return Self::invalid_object(
+                parent_path,
+                format!(
+                    "expected {} fields, received {}",
+                    fields.len(),
+                    object.fields.len()
+                ),
+            );
+        }
+
+        let mut omitted_optional = false;
+        for (field, supplied) in fields.iter().zip(&object.fields) {
+            let path = Self::child_path(parent_path, &field.name);
+            if supplied.name != field.name {
+                return Self::invalid_object(
+                    &path,
+                    format!(
+                        "expected field `{}`, received `{}`",
+                        field.name, supplied.name
+                    ),
+                );
+            }
+
+            if field.required {
+                if matches!(supplied.value, DecodedValue::Optional(_)) {
+                    return Self::invalid_object(&path, "required field cannot be optional");
+                }
+                Self::encode_value(field, &supplied.value, &path, encoded)?;
+                continue;
+            }
+
+            match &supplied.value {
+                DecodedValue::Optional(None) => omitted_optional = true,
+                DecodedValue::Optional(Some(value)) if !omitted_optional => {
+                    Self::encode_value(field, value, &path, encoded)?;
+                }
+                DecodedValue::Optional(Some(_)) => {
+                    return Self::invalid_object(
+                        &path,
+                        "present optional field cannot follow an absent optional field",
+                    );
+                }
+                _ => {
+                    return Self::invalid_object(
+                        &path,
+                        "optional field must use DecodedValue::Optional",
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn encode_value(
+        field: &WitnessField,
+        value: &DecodedValue,
+        path: &str,
+        encoded: &mut Vec<u8>,
+    ) -> Result<()> {
+        match (field.structural_type(), value) {
+            ("uint8", DecodedValue::U8(value)) => encoded.push(*value),
+            ("uint16", DecodedValue::U16(value)) => encoded.extend_from_slice(&value.to_le_bytes()),
+            ("uint32", DecodedValue::U32(value)) => encoded.extend_from_slice(&value.to_le_bytes()),
+            ("uint64", DecodedValue::U64(value)) => encoded.extend_from_slice(&value.to_le_bytes()),
+            ("uint128", DecodedValue::U128(value)) => {
+                encoded.extend_from_slice(&value.to_le_bytes())
+            }
+            ("bytes", DecodedValue::Bytes(bytes)) => {
+                let length = u32::try_from(bytes.len()).map_err(|_| IdlError::InvalidObject {
+                    path: path.to_string(),
+                    reason: "byte string length exceeds u32".to_string(),
+                })?;
+                encoded.extend_from_slice(&length.to_le_bytes());
+                encoded.extend_from_slice(bytes);
+            }
+            ("vector", DecodedValue::Vector(values)) => {
+                Self::encode_vector(field, values, path, encoded)?;
+            }
+            ("struct", DecodedValue::Struct(object)) => {
+                let fields = Self::nonempty_struct_fields(field)?;
+                Self::encode_fields(fields, object, path, encoded)?;
+            }
+            (
+                "union",
+                DecodedValue::Union {
+                    tag,
+                    variant,
+                    value,
+                },
+            ) => Self::encode_union(field, *tag, variant, value, path, encoded)?,
+            (type_, DecodedValue::Bytes(bytes)) if fixed_size_for_type(type_).is_some() => {
+                let expected = fixed_size_for_type(type_).unwrap();
+                if bytes.len() != expected {
+                    return Self::invalid_object(
+                        path,
+                        format!("expected {expected} bytes, received {}", bytes.len()),
+                    );
+                }
+                encoded.extend_from_slice(bytes);
+            }
+            (type_, value) => {
+                return Self::invalid_object(
+                    path,
+                    format!(
+                        "expected value for structural type `{type_}`, received {}",
+                        Self::value_kind(value)
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn encode_vector(
+        field: &WitnessField,
+        values: &[DecodedValue],
+        path: &str,
+        encoded: &mut Vec<u8>,
+    ) -> Result<()> {
+        if values.is_empty() {
+            return Self::invalid_object(path, "vectors must not be empty");
+        }
+        let count = u32::try_from(values.len()).map_err(|_| IdlError::InvalidObject {
+            path: path.to_string(),
+            reason: "vector element count exceeds u32".to_string(),
+        })?;
+        let item = field
+            .items
+            .as_deref()
+            .ok_or_else(|| IdlError::InvalidObject {
+                path: path.to_string(),
+                reason: "vector schema is missing items".to_string(),
+            })?;
+        encoded.extend_from_slice(&count.to_le_bytes());
+        for (index, value) in values.iter().enumerate() {
+            Self::encode_vector_item(item, value, &format!("{path}/{index}"), encoded)?;
+        }
+        Ok(())
+    }
+
+    fn encode_vector_item(
+        item: &VectorItem,
+        value: &DecodedValue,
+        path: &str,
+        encoded: &mut Vec<u8>,
+    ) -> Result<()> {
+        match (item.structural_type(), value) {
+            ("uint16", DecodedValue::U16(value)) => encoded.extend_from_slice(&value.to_le_bytes()),
+            ("uint32", DecodedValue::U32(value)) => encoded.extend_from_slice(&value.to_le_bytes()),
+            ("uint64", DecodedValue::U64(value)) => encoded.extend_from_slice(&value.to_le_bytes()),
+            ("uint128", DecodedValue::U128(value)) => {
+                encoded.extend_from_slice(&value.to_le_bytes())
+            }
+            (type_, DecodedValue::Bytes(bytes)) if fixed_size_for_type(type_).is_some() => {
+                let expected = fixed_size_for_type(type_).unwrap();
+                if bytes.len() != expected {
+                    return Self::invalid_object(
+                        path,
+                        format!("expected {expected} bytes, received {}", bytes.len()),
+                    );
+                }
+                encoded.extend_from_slice(bytes);
+            }
+            (type_, value) => {
+                return Self::invalid_object(
+                    path,
+                    format!(
+                        "expected vector item `{type_}`, received {}",
+                        Self::value_kind(value)
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn encode_union(
+        field: &WitnessField,
+        tag: u32,
+        variant_name: &str,
+        value: &WitnessObject,
+        path: &str,
+        encoded: &mut Vec<u8>,
+    ) -> Result<()> {
+        let variant = field
+            .variants
+            .as_deref()
+            .and_then(|variants| variants.iter().find(|variant| variant.tag == tag))
+            .ok_or_else(|| IdlError::InvalidObject {
+                path: path.to_string(),
+                reason: format!("unknown union tag {tag}"),
+            })?;
+        if variant.name != variant_name {
+            return Self::invalid_object(
+                path,
+                format!(
+                    "union tag {tag} names variant `{}`, not `{variant_name}`",
+                    variant.name
+                ),
+            );
+        }
+        encoded.extend_from_slice(&tag.to_le_bytes());
+        Self::encode_fields(&variant.fields, value, path, encoded)
+    }
+
+    fn child_path(parent: &str, field: &str) -> String {
+        if parent.is_empty() {
+            format!("/{field}")
+        } else {
+            format!("{parent}/{field}")
+        }
+    }
+
+    fn invalid_object<T>(path: &str, reason: impl Into<String>) -> Result<T> {
+        Err(IdlError::InvalidObject {
+            path: path.to_string(),
+            reason: reason.into(),
+        })
+    }
+
+    fn value_kind(value: &DecodedValue) -> &'static str {
+        match value {
+            DecodedValue::Bytes(_) => "bytes",
+            DecodedValue::U8(_) => "uint8",
+            DecodedValue::U16(_) => "uint16",
+            DecodedValue::U32(_) => "uint32",
+            DecodedValue::U64(_) => "uint64",
+            DecodedValue::U128(_) => "uint128",
+            DecodedValue::Vector(_) => "vector",
+            DecodedValue::Struct(_) => "struct",
+            DecodedValue::Union { .. } => "union",
+            DecodedValue::Optional(_) => "optional",
+        }
     }
 }
 
@@ -571,7 +834,10 @@ mod tests {
 
         assert_eq!(out[0].value, DecodedValue::Bytes(sig.to_vec()));
         assert_eq!(out[1].value, DecodedValue::U64(ts));
-        assert_eq!(out[2].value, DecodedValue::Bytes(payload.to_vec()));
+        assert_eq!(
+            out[2].value,
+            DecodedValue::Optional(Some(Box::new(DecodedValue::Bytes(payload.to_vec()))))
+        );
     }
 
     #[test]
@@ -661,8 +927,8 @@ mod tests {
             DecodedValue::Union {
                 tag: 7,
                 variant,
-                fields
-            } if variant == "Amount" && fields[0].value == DecodedValue::U128(123)
+                value
+            } if variant == "Amount" && value[0].value == DecodedValue::U128(123)
         ));
     }
 
@@ -793,20 +1059,30 @@ mod tests {
                             if let Some(hex_val) = expected_field["value_hex"].as_str() {
                                 let expected_bytes = hex::decode(hex_val)
                                     .unwrap_or_else(|e| panic!("[{id}] bad value_hex: {e}"));
+                                let expected_value = DecodedValue::Bytes(expected_bytes);
+                                let expected_value = if fields[i].required {
+                                    expected_value
+                                } else {
+                                    DecodedValue::Optional(Some(Box::new(expected_value)))
+                                };
                                 assert_eq!(
-                                    got_field.value,
-                                    DecodedValue::Bytes(expected_bytes),
+                                    got_field.value, expected_value,
                                     "[{id}] field[{i}] ({exp_name}) value mismatch"
                                 );
                             } else if let Some(u_val) = expected_field["value_u64"].as_u64() {
-                                let expected_val = match got_field.type_.as_str() {
+                                let expected_value = match fields[i].type_.as_str() {
                                     "uint8" => DecodedValue::U8(u_val as u8),
                                     "uint32" => DecodedValue::U32(u_val as u32),
                                     "uint64" => DecodedValue::U64(u_val),
                                     other => panic!("[{id}] unexpected numeric type {other}"),
                                 };
+                                let expected_value = if fields[i].required {
+                                    expected_value
+                                } else {
+                                    DecodedValue::Optional(Some(Box::new(expected_value)))
+                                };
                                 assert_eq!(
-                                    got_field.value, expected_val,
+                                    got_field.value, expected_value,
                                     "[{id}] field[{i}] ({exp_name}) value mismatch"
                                 );
                             }

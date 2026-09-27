@@ -1,197 +1,284 @@
 # ckb-idl-client
 
-A Rust client library for the CKB IDL system. It verifies that a script's on-chain IDL commitment matches a local IDL file, then structurally validates a proposed witness buffer before a transaction is submitted.
+`ckb-idl-client` is the wallet and transaction-builder implementation of CKB
+IDL 0.1.0. It can:
 
-This is the wallet/tooling side of the IDL system. The script side is [`ckb-idl-derive`](https://github.com/your-org/ckb-idl-derive).
+- fetch exact IDL bytes from a registry;
+- verify those bytes against an IDL commitment in code-cell data;
+- validate the IDL document and its recursive witness schema;
+- decode `WitnessArgs.lock` bytes into an ordered logical object; and
+- encode that object back into the exact linear wire representation.
 
----
+The crate performs structural validation. Signature validity, timelocks,
+commitments, and other script-specific semantics remain the responsibility of
+the CKB script.
 
-## What problem this solves
+## Status
 
-CKB lock scripts receive their spending conditions through a `WitnessArgs` field. The field is raw bytes — the VM knows the format, but wallets and tooling don't, unless they have out-of-band knowledge of the script. This means:
+This project is pre-release. The implemented protocol target is IDL 0.1.0, but
+the Rust API can still change before the compatible crates and specification
+are tagged.
 
-- A wallet building a transaction for an unknown script has to guess the witness encoding.
-- If the encoding is wrong, the transaction fails with a VM error code — not a user-friendly message.
-- There is no machine-readable way to discover what a script expects.
+Current scope is one `witness_args.lock` interface using
+`ckb-idl-linear-0.1.0`. Script args, other `WitnessArgs` fields, type-script and
+cell-data interfaces, Molecule encoding, and type-hash-aware code-cell identity
+are future work.
 
-The IDL system fixes this. A script author annotates their witness struct with `#[derive(CkbWitness)]`, which generates an `idl.json` describing the fields. At deployment time, a SHA-256 hash of that JSON is appended to the code cell data. Any client holding the IDL file can verify it matches the on-chain commitment and know with certainty that the IDL describes the deployed code.
+## Installation
 
----
-
-## Architecture
-
-The system has three tiers:
-
-**Tier 0 — IDL commitment verification**
-Fetch the code cell data, extract the last 32 bytes (the IDL commitment), and compare it against `SHA-256(idl.json)`. If they match, the IDL is authentic — it describes the exact code that is deployed.
-
-**Tier 1 — Structural validation (PSCT)**
-Parse the proposed witness bytes field-by-field according to the IDL's declared types. This checks that the wire encoding is well-formed: correct lengths, correct field order, no trailing bytes. This is Pre-Submission Correctness Testing — it runs before any network call.
-
-**Tier 2 — Semantic validation**
-Enforced by the VM on-chain. Whether a signature is valid, whether a timelock has passed — these are semantic checks. The IDL client does not and cannot perform them.
-
----
-
-## Usage
-
-Add to `Cargo.toml`:
+During development, add the local crate:
 
 ```toml
 [dependencies]
 ckb-idl-client = { path = "../ckb-idl-client" }
 ```
 
-### Verify the IDL commitment
+The asynchronous registry methods require a Tokio runtime.
 
-```rust
+## Trust model
+
+IDL discovery and IDL authority are separate:
+
+```text
+registry response bytes                 untrusted
+        ↓
+Binding Trailer 1 digest verification   authenticates exact IDL bytes
+        ↓
+IDL parsing and document validation     authenticates document structure
+        ↓
+private verified cache                  safe requirements lookup
+```
+
+`parse_document()` only parses. `fetch_bytes()` only retrieves bytes. Neither
+operation authenticates an IDL.
+
+Use `verify_and_cache()` or `fetch_verify_and_cache()` when the result will be
+trusted:
+
+```rust,no_run
 use ckb_idl_client::IdlClient;
 
+# async fn example(
+#     registry_url: &str,
+#     code_hash: [u8; 32],
+#     code_cell_data: Vec<u8>,
+# ) -> ckb_idl_client::Result<()> {
 let mut client = IdlClient::new();
 
-// code_hash: the blake2b-256 hash of the code cell data (used to identify the script)
-// idl_json_bytes: the contents of the frozen IDL file from deployment
-// code_cell_data: the raw bytes of the deployed code cell (binary + appended IDL hash)
-client.verify(code_hash, &idl_json_bytes, &code_cell_data)?;
+client
+    .fetch_verify_and_cache(registry_url, code_hash, &code_cell_data)
+    .await?;
 
-println!("IDL is authentic.");
+let fields = client.lock_witness_requirements(code_hash)?;
+println!("{} witness fields", fields.len());
+# Ok(())
+# }
 ```
 
-### Validate a witness before submitting a transaction
+The caller must currently supply the code-cell data resolved for `code_hash`.
+The client verifies the IDL commitment inside those bytes, but it does not yet
+prove the CKB code-hash lookup relation. Data-hash verification and later
+version-aware `hash_type = type` support are tracked separately.
 
-```rust
-use ckb_idl_client::{IdlClient, IdlDocument};
+## Exact-byte commitment
 
-let idl_doc: IdlDocument = serde_json::from_slice(&idl_json_bytes)?;
-let client = IdlClient::new();
+IDL 0.1.0 uses RFC 8785 canonical JSON and raw SHA-256 over the exact artifact
+bytes. Binding Trailer 1 is appended to the executable:
 
-// wire: the raw bytes you intend to put in WitnessArgs.lock
-let validated = client.validate_lock_witness(idl_doc, &wire)?;
+```text
+code_cell_data = executable || payload || payload_len_u32_le || magic
 
-for field in &validated {
-    println!("{} ({}): {:?}", field.name, field.type_, field.value);
-}
-// If this returns Ok, the encoding is structurally valid. Submit the transaction.
+payload = version_u8 || flags_u8 || sha256(canonical_idl_bytes)
+version = 1
+flags = 0
+payload_len = 34
+magic = "CKBIDL\0\0"
 ```
 
-### Full example: simple-lock
+The complete trailer is 46 bytes. Verification rejects unknown versions,
+unknown flags, incorrect payload lengths, incorrect magic, noncanonical JSON,
+and digest mismatches.
 
-```rust
-// Preimage: "hello"
-let preimage = b"hello";
+Commitment tooling must preserve the frozen canonical IDL bytes. It must not
+pretty-print, trim, or silently reserialize the document before hashing.
 
-// Wire encoding for a "bytes" field: 4-byte LE length prefix + payload
-let mut wire = Vec::new();
-wire.extend_from_slice(&(preimage.len() as u32).to_le_bytes());
-wire.extend_from_slice(preimage);
+## IDL document model
 
-// Validate against the IDL before building the transaction
-let validated = client.validate_lock_witness(idl_doc, &wire)?;
-// => Ok([ValidatedField { name: "preimage", type_: "bytes", value: Bytes([104,101,108,108,111]) }])
-```
-
----
-
-## Wire format
-
-The wire format is defined by `ckb-idl-derive`'s generated `from_witness_args` implementation. It is sequential, with no envelope framing:
-
-| IDL type           | Wire encoding                                      |
-|--------------------|---------------------------------------------------|
-| `uint8`            | 1 byte                                             |
-| `uint32`           | 4 bytes, little-endian                             |
-| `uint64`           | 8 bytes, little-endian                             |
-| `secp256k1_sig`    | 65 bytes, fixed                                    |
-| `secp256k1_pubkey` | 33 bytes, fixed                                    |
-| `schnorr_sig`      | 64 bytes, fixed                                    |
-| `bytes`            | 4-byte LE length prefix, then that many bytes      |
-
-Fields are decoded in declaration order. Any trailing bytes after all fields are consumed are an error.
-
----
-
-## IDL commitment scheme
-
-At deployment time:
-
-```
-code_cell_data = risc_v_binary || sha256(idl.json)
-```
-
-The deployer writes the exact IDL bytes used to `{script_name}-idl.deployed.json` immediately after computing the hash. This frozen file is what subsequent `verify()` calls should use — not the live generated file, which may be regenerated by `cargo build`.
-
-At spend time:
-
-```
-sha256(idl_json_bytes) == code_cell_data[-32:]
-```
-
----
-
-## Error types
-
-`IdlError` covers every failure case:
-
-| Variant           | Meaning                                                        |
-|-------------------|----------------------------------------------------------------|
-| `InsufficientData`| Code cell data is shorter than 32 bytes                        |
-| `HashMismatch`    | IDL file hash does not match the on-chain commitment           |
-| `JsonParse`       | IDL JSON is malformed                                          |
-| `UnknownType`     | A field uses a type string not known to this decoder           |
-| `FieldTooShort`   | Buffer exhausted before a field was fully decoded              |
-| `TrailingBytes`   | Extra bytes remain after all fields are decoded                |
-| `HttpError`       | HTTP error when fetching IDL from a registry                   |
-
----
-
-## Test vectors
-
-`test-vectors.json` at the crate root is a canonical, language-independent specification of the wire format. It contains 16 named cases covering every field type, every error condition, and both supported scripts.
-
-Any reimplementation of the decoder (TypeScript, Python, Go) must produce identical results for every vector. The Rust test `test_vectors_file` loads and runs them automatically.
-
-To run the tests:
-
-```bash
-cargo test --lib
-```
-
----
-
-## IDL document format
-
-The IDL JSON produced by `ckb-idl-derive` and consumed by this client:
+An IDL 0.1.0 document contains exactly one supported interface:
 
 ```json
 {
-  "witness": [
+  "idl_version": "0.1.0",
+  "interfaces": [
     {
-      "name": "signature",
-      "type": "secp256k1_sig",
-      "required": true,
-      "description": "ECDSA signature over the transaction hash"
-    },
-    {
-      "name": "unlock_after_ms",
-      "type": "uint64",
-      "required": true
-    },
-    {
-      "name": "extra",
-      "type": "bytes",
-      "required": false,
-      "description": "Optional auxiliary payload"
+      "id": "lock_witness",
+      "kind": "witness_args.lock",
+      "encoding": { "id": "ckb-idl-linear-0.1.0" },
+      "fields": [
+        {
+          "name": "signature",
+          "type": "secp256k1_sig",
+          "wire_type": "bytes_fixed_65",
+          "required": true,
+          "description": "Signature authorizing the spend"
+        },
+        {
+          "name": "memo",
+          "type": "bytes",
+          "required": false
+        }
+      ]
     }
   ]
 }
 ```
 
-`idl_version`, `name`, `description`, `script_version`, and `signing` are optional top-level fields. The client accepts documents with or without them.
+The formatted JSON above is illustrative. A committed artifact must use RFC
+8785 canonical bytes.
 
----
+`type` carries either structural meaning or wallet-facing semantic meaning.
+`wire_type` is required only when `type` is semantic. For example,
+`secp256k1_sig` uses `bytes_fixed_65`. Structural types must not redundantly
+provide `wire_type`.
 
-## Status
+Document validation also enforces:
 
-This is a pre-publication research implementation. The wire format, commitment scheme, and type registry are stable enough to write reimplementations against, but the API surface may change before a 1.0 release.
+- ASCII identifiers;
+- unique field and union-variant names;
+- required fields before trailing optional fields;
+- nonempty structs, union variant lists, union payloads, and encoded vectors;
+- unique union tags sorted in ascending order;
+- conditional `items`, `fields`, and `variants` metadata; and
+- the supported typed-vector element set.
 
-The test vectors file is the normative specification. The prose in this README is informative.
+## Linear encoding
+
+Fields are encoded sequentially in declaration order.
+
+| Structural type | Encoding |
+|---|---|
+| `uint8` | one byte |
+| `uint16`, `uint32`, `uint64`, `uint128` | little-endian unsigned integer |
+| `bytes_fixed_N` | exactly `N` bytes |
+| `bytes` | `u32` little-endian byte length, then payload |
+| `vector` | `u32` little-endian element count, then fixed-size elements |
+| `struct` | child fields in declaration order |
+| `union` | `u32` little-endian tag, then selected payload fields |
+
+Typed vectors support `uint16`, `uint32`, `uint64`, `uint128`, and
+`bytes_fixed_N`. `Vec<u8>` is represented as `bytes`, not `vector<uint8>`.
+
+Optional fields are represented by `required: false`, must be trailing, and
+are absent by buffer exhaustion. Empty `bytes` remains distinguishable from an
+absent optional field because present bytes always include a four-byte length.
+
+Trailing witness bytes are rejected.
+
+## Decoding witnesses
+
+`decode_lock_witness()` validates the document and returns an ordered
+`WitnessObject`:
+
+```rust
+use ckb_idl_client::{DecodedValue, IdlClient, IdlDocument};
+
+# fn example(
+#     idl_bytes: &[u8],
+#     witness_lock: &[u8],
+# ) -> ckb_idl_client::Result<()> {
+let document: IdlDocument = IdlClient::parse_document(idl_bytes)?;
+let client = IdlClient::new();
+let object = client.decode_lock_witness(&document, witness_lock)?;
+
+if let Some(DecodedValue::Bytes(signature)) = object.get("signature") {
+    println!("signature has {} bytes", signature.len());
+}
+# Ok(())
+# }
+```
+
+Nested structs contain another `WitnessObject`. Unions retain their numeric tag,
+declared variant name, and payload object. Optional fields decode to
+`Optional(None)` or `Optional(Some(value))`.
+
+## Encoding witnesses
+
+Wallets and transaction builders can construct an object and encode it:
+
+```rust
+use ckb_idl_client::{
+    DecodedField, DecodedValue, IdlClient, IdlDocument, WitnessObject,
+};
+
+# fn example(document: &IdlDocument) -> ckb_idl_client::Result<Vec<u8>> {
+let object = WitnessObject::new(vec![
+    DecodedField {
+        name: "signature".into(),
+        value: DecodedValue::Bytes(vec![0u8; 65]),
+    },
+    DecodedField {
+        name: "memo".into(),
+        value: DecodedValue::Optional(None),
+    },
+]);
+
+let wire = IdlClient::new().encode_lock_witness(document, &object)?;
+# Ok(wire)
+# }
+```
+
+Encoding rejects missing, unknown, out-of-order, incorrectly typed, or
+incorrectly sized values. A present optional field cannot follow an absent one.
+
+## Stable errors and paths
+
+Every `IdlError` exposes a stable category and RFC 6901 path:
+
+```rust
+# fn show(error: ckb_idl_client::IdlError) {
+println!("{} at {}", error.category(), error.path());
+# }
+```
+
+Examples:
+
+```text
+field_too_short at /signature
+field_too_short at /authorization/value/signature
+field_too_short at /signatures/1
+invalid_document at /interfaces/0/fields/1/type
+trailing_bytes at ""
+```
+
+The stable categories and paths are shared by the language-independent
+conformance vectors.
+
+## Conformance
+
+Versioned copies of the IDL 0.1.0 normative fixtures live under
+`tests/fixtures/idl-0.1.0`. The test suite checks:
+
+- successful scalar and recursive decoding;
+- byte-for-byte object re-encoding;
+- malformed witness categories and paths;
+- malformed document categories and paths;
+- RFC 8785 canonicalization behavior;
+- canonical example SHA-256 hashes; and
+- Binding Trailer 1 verification.
+
+Run all checks with:
+
+```bash
+cargo fmt --all -- --check
+cargo test --all-features --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+```
+
+## Repository roles
+
+- `ckb-idl-spec`: normative schema, encoding, errors, commitment format, and fixtures.
+- `ckb-idl-derive`: Rust witness derives and recursive IDL exporter.
+- `ckb-idl-client`: registry retrieval, verification, object decoding, and encoding.
+
+The script registry is a discovery layer. Commitment verification is what lets
+clients safely consume a document returned by that registry.

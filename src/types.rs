@@ -1,81 +1,117 @@
+//! IDL 0.1.0 document types and decoded witness values.
+
 use serde::{Deserialize, Serialize};
 
+/// A complete IDL 0.1.0 document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdlDocument {
+    /// IDL specification version. IDL 0.1 clients require `"0.1.0"`.
     pub idl_version: String,
+    /// Interfaces described by this document.
     pub interfaces: Vec<IdlInterface>,
 }
 
+/// One top-level interface in an IDL document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdlInterface {
+    /// Stable interface identifier chosen by the author.
     pub id: String,
+    /// Location and role of the encoded interface.
     pub kind: InterfaceKind,
+    /// Encoding profile used by the interface.
     pub encoding: EncodingProfile,
+    /// Ordered top-level fields.
     pub fields: Vec<WitnessField>,
 }
 
+/// Interface locations supported by IDL 0.1.0.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InterfaceKind {
+    /// Bytes stored in `WitnessArgs.lock`.
     #[serde(rename = "witness_args.lock")]
     WitnessArgsLock,
 }
 
+/// Identifies the wire-encoding profile for an interface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EncodingProfile {
+    /// Encoding identifier, currently `ckb-idl-linear-0.1.0`.
     pub id: String,
 }
 
+/// Legacy signing metadata container.
+///
+/// Signing metadata is not part of the normative IDL 0.1.0 document schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SigningInfo {
+    /// Signature algorithm identifier.
     pub algorithm: String,
+    /// Description of the signed message.
     pub message: String,
+    /// Message hash algorithm identifier.
     pub hasher: String,
 }
 
+/// Schema for one ordered witness field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WitnessField {
+    /// Field name, also used in logical object paths.
     pub name: String,
 
+    /// Structural or wallet-facing semantic type.
     #[serde(rename = "type")]
     pub type_: String,
 
+    /// Structural type used when `type` is semantic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire_type: Option<String>,
 
+    /// Whether bytes for this field must be present.
     pub required: bool,
 
+    /// Optional wallet-facing field description.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
+    /// Element schema for a typed vector.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<VectorItem>>,
 
+    /// Ordered child fields for a nested struct.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<WitnessField>>,
 
+    /// Tagged alternatives for a union.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variants: Option<Vec<UnionVariant>>,
 }
 
+/// Schema for one element of a typed vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VectorItem {
+    /// Structural or semantic element type.
     #[serde(rename = "type")]
     pub type_: String,
 
+    /// Structural element type used when `type` is semantic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire_type: Option<String>,
 }
 
+/// One explicitly tagged union alternative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnionVariant {
+    /// Stable wire tag encoded as little-endian `u32`.
     pub tag: u32,
+    /// Human- and machine-readable variant name.
     pub name: String,
+    /// Ordered payload fields for this variant.
     pub fields: Vec<WitnessField>,
 }
 
@@ -105,30 +141,42 @@ pub enum DecodedValue {
     Struct(WitnessObject),
     /// A tagged union and the fields of its selected variant.
     Union {
+        /// Explicit wire tag selected by the encoded witness.
         tag: u32,
+        /// Declared name associated with `tag`.
         variant: String,
+        /// Decoded payload fields.
         value: WitnessObject,
     },
     /// A trailing optional field, either absent or carrying its decoded value.
     Optional(Option<Box<DecodedValue>>),
 }
 
+/// One named value in a decoded or to-be-encoded witness object.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedField {
+    /// Field name matching the corresponding IDL schema field.
     pub name: String,
+    /// Logical field value.
     pub value: DecodedValue,
 }
 
+/// Ordered logical representation of witness fields.
+///
+/// Field order is retained because the linear encoding is order-sensitive.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WitnessObject {
+    /// Ordered decoded fields.
     pub fields: Vec<DecodedField>,
 }
 
 impl WitnessObject {
+    /// Constructs an object from ordered decoded fields.
     pub fn new(fields: Vec<DecodedField>) -> Self {
         Self { fields }
     }
 
+    /// Looks up a decoded value by field name.
     pub fn get(&self, name: &str) -> Option<&DecodedValue> {
         self.fields
             .iter()

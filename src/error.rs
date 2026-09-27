@@ -1,5 +1,11 @@
+//! Errors returned while fetching, verifying, validating, decoding, and encoding IDLs.
+
 use thiserror::Error;
 
+/// All failures reported by the IDL client.
+///
+/// [`IdlError::category`] and [`IdlError::path`] expose the stable protocol
+/// representation used by conformance vectors and cross-language clients.
 #[derive(Debug, Error)]
 pub enum IdlError {
     /// An HTTP request to the indexer failed at the network/transport level.
@@ -8,7 +14,10 @@ pub enum IdlError {
 
     /// The indexer returned a non-success HTTP status code.
     #[error("HTTP error: status {status}")]
-    HttpError { status: u16 },
+    HttpError {
+        /// HTTP status returned by the registry.
+        status: u16,
+    },
 
     /// The response body could not be deserialized as a valid IdlDocument.
     #[error("deserialization error: {0}")]
@@ -16,33 +25,61 @@ pub enum IdlError {
 
     /// The SHA-256 hash of the IDL JSON does not match the on-chain commitment.
     #[error("hash mismatch: computed {computed}, expected {expected}")]
-    HashMismatch { computed: String, expected: String },
+    HashMismatch {
+        /// SHA-256 digest computed from the supplied IDL bytes.
+        computed: String,
+        /// Digest committed by the binding trailer.
+        expected: String,
+    },
 
     /// The code cell data is too short to contain the 46-byte IDL binding trailer.
     #[error("insufficient data: code_cell_data has {actual} bytes, need at least 46")]
-    InsufficientData { actual: usize },
+    InsufficientData {
+        /// Actual number of code-cell-data bytes supplied.
+        actual: usize,
+    },
 
+    /// The code-cell binding trailer is malformed or unsupported.
     #[error("invalid IDL binding trailer: {reason}")]
-    InvalidTrailer { reason: &'static str },
+    InvalidTrailer {
+        /// Static explanation of the trailer violation.
+        reason: &'static str,
+    },
 
+    /// JSON bytes are valid JSON but are not the required RFC 8785 artifact.
     #[error("IDL document bytes are valid JSON but are not RFC 8785 canonical bytes")]
     NonCanonicalDocument,
 
+    /// The parsed IDL violates the normative document schema.
     #[error("invalid IDL document at `{path}`: {reason}")]
-    InvalidDocument { path: String, reason: String },
+    InvalidDocument {
+        /// RFC 6901 path to the invalid document value.
+        path: String,
+        /// Human-readable explanation of the violation.
+        reason: String,
+    },
 
+    /// A caller-supplied witness object does not match its IDL schema.
     #[error("invalid witness object at `{path}`: {reason}")]
-    InvalidObject { path: String, reason: String },
+    InvalidObject {
+        /// Logical object path to the invalid value.
+        path: String,
+        /// Human-readable explanation of the mismatch.
+        reason: String,
+    },
 
     // ── Witness validation errors ────────────────────────────────────────────
     /// The witness buffer ran out of bytes while decoding a field.
     ///
-    /// `field` is the IDL field name. `expected` is how many bytes were needed,
+    /// `path` identifies the logical field. `expected` is how many bytes were needed,
     /// `got` is how many bytes remained in the buffer.
     #[error("witness too short at `{path}`: need {expected} bytes, have {got}")]
     FieldTooShort {
+        /// Logical path to the truncated value.
         path: String,
+        /// Bytes required to complete the value.
         expected: usize,
+        /// Bytes actually remaining.
         got: usize,
     },
 
@@ -51,55 +88,101 @@ pub enum IdlError {
     /// This means the IDL was produced by a newer version of `ckb-idl-derive` that
     /// added type support not yet present in this client.
     #[error("unknown IDL type `{type_}` at `{path}`")]
-    UnknownType { path: String, type_: String },
+    UnknownType {
+        /// Logical path to the unsupported value.
+        path: String,
+        /// Unsupported structural type identifier.
+        type_: String,
+    },
 
-    /// A structural type is missing the metadata needed to decode it.
+    /// A low-level field schema is missing metadata required for decoding.
     #[error("invalid schema at `{path}`: {reason}")]
-    InvalidFieldSchema { path: String, reason: &'static str },
+    InvalidFieldSchema {
+        /// Logical path to the malformed low-level schema.
+        path: String,
+        /// Static explanation of the schema violation.
+        reason: &'static str,
+    },
 
-    /// Encoded vectors must contain at least one element.
+    /// An encoded vector contains a prohibited element count.
     #[error("vector at `{path}` has invalid element count {count}")]
-    InvalidVectorCount { path: String, count: usize },
+    InvalidVectorCount {
+        /// Logical path to the vector.
+        path: String,
+        /// Prohibited encoded element count.
+        count: usize,
+    },
 
-    /// A union tag does not identify any declared variant.
+    /// A union tag does not identify a declared variant.
     #[error("unknown union tag {tag} at `{path}`")]
-    UnknownUnionTag { path: String, tag: u32 },
+    UnknownUnionTag {
+        /// Logical path to the union.
+        path: String,
+        /// Tag not present in the union schema.
+        tag: u32,
+    },
 
+    /// A length prefix cannot represent a valid field span.
     #[error("invalid length at `{path}`")]
-    InvalidLength { path: String },
+    InvalidLength {
+        /// Logical path to the invalid length-prefixed value.
+        path: String,
+    },
 
     /// A cursor or encoded-length calculation exceeded the platform size.
     #[error("integer overflow while decoding `{path}`")]
-    IntegerOverflow { path: String },
+    IntegerOverflow {
+        /// Logical path being decoded when arithmetic overflowed.
+        path: String,
+    },
 
     /// All declared fields decoded successfully but bytes remain unconsumed
     /// in the witness buffer. Indicates the witness has more data than the IDL
     /// describes — likely a version mismatch or wrong IDL.
     #[error("witness has {trailing} trailing bytes after all {field_count} fields were decoded")]
     TrailingBytes {
+        /// Empty string for the whole witness buffer.
         path: String,
+        /// Number of unconsumed bytes.
         trailing: usize,
+        /// Number of top-level fields that were decoded.
         field_count: usize,
     },
 
-    /// Unsupported IDL version
+    /// The document uses an unsupported IDL version.
     #[error("unsupported IDL version `{version}`")]
-    UnsupportedVersion { version: String },
+    UnsupportedVersion {
+        /// Unsupported version string from the document.
+        version: String,
+    },
 
+    /// The document has no `witness_args.lock` interface.
     #[error("IDL document has no witness_args.lock interface")]
     MissingLockWitnessInterface,
 
+    /// The document has more than one `witness_args.lock` interface.
     #[error("IDL document contains more than one witness_args.lock interface")]
     DuplicateLockWitnessInterface,
 
+    /// The selected interface uses an unsupported encoding profile.
     #[error("unsupported encoding profile `{encoding}`")]
-    UnsupportedEncoding { path: String, encoding: String },
+    UnsupportedEncoding {
+        /// Document path to the encoding identifier.
+        path: String,
+        /// Unsupported encoding identifier.
+        encoding: String,
+    },
 
+    /// No commitment-verified document is cached under the requested code hash.
     #[error("no verified IDL cached for code hash {code_hash}")]
-    DocumentNotVerified { code_hash: String },
+    DocumentNotVerified {
+        /// Hex-encoded cache key requested by the caller.
+        code_hash: String,
+    },
 }
 
 impl IdlError {
+    /// Returns the stable snake-case error category defined by IDL 0.1.0.
     pub fn category(&self) -> &'static str {
         match self {
             Self::NetworkError(_) => "network_error",
@@ -126,6 +209,9 @@ impl IdlError {
         }
     }
 
+    /// Returns the RFC 6901 logical or document path associated with the error.
+    ///
+    /// Whole-document and whole-buffer errors return the empty string.
     pub fn path(&self) -> &str {
         match self {
             Self::InvalidDocument { path, .. }

@@ -1,6 +1,13 @@
+//! Validation rules and interface selection for IDL 0.1.0 documents.
+
 use crate::{IdlDocument, IdlError, IdlInterface, InterfaceKind, WitnessField, types::VectorItem};
 
 impl WitnessField {
+    /// Returns the structural type used by the wire decoder.
+    ///
+    /// Valid documents explicitly provide `wire_type` for semantic types. The
+    /// standard semantic registry fallback keeps low-level field decoding
+    /// compatible with field slices that have not passed document validation.
     pub fn structural_type(&self) -> &str {
         self.wire_type
             .as_deref()
@@ -10,6 +17,7 @@ impl WitnessField {
 }
 
 impl VectorItem {
+    /// Returns the structural type used for vector elements.
     pub fn structural_type(&self) -> &str {
         self.wire_type
             .as_deref()
@@ -19,6 +27,7 @@ impl VectorItem {
 }
 
 impl IdlDocument {
+    /// Selects the sole `witness_args.lock` interface and checks its version and encoding.
     pub fn lock_witness(&self) -> Result<&IdlInterface, IdlError> {
         if self.idl_version != "0.1.0" {
             return Err(IdlError::UnsupportedVersion {
@@ -54,6 +63,10 @@ impl IdlDocument {
         Ok(interface)
     }
 
+    /// Validates the IDL 0.1.0 document and returns its lock-witness interface.
+    ///
+    /// Validation covers identifiers, semantic and structural types, recursive
+    /// metadata, optional ordering, unique names, and stable union tags.
     pub fn validate(&self) -> Result<&IdlInterface, IdlError> {
         let interface = self.lock_witness()?;
         let interface_index = self

@@ -2,6 +2,10 @@
 name = "ckb-idl-client"
 version = "0.1.0"
 edition = "2024"
+description = "Verification, parsing, and witness encoding for CKB IDL 0.1"
+license = "MIT"
+repository = "https://github.com/ckb-idl/ckb-idl-client.git"
+readme = "README.md"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["json"] }
